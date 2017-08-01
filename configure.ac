@@ -219,19 +219,16 @@ AC_CHECK_HEADERS([rte_ethdev.h], [],
 
 old_LIBS="${LIBS}"
 LIBS="-ldpdk ${LIBS}"
-AC_MSG_CHECKING([for DPDK 16.07 built as shared libraries])
+AC_MSG_CHECKING([for DPDK 16.11 built as shared libraries])
 AC_LINK_IFELSE([AC_LANG_PROGRAM(
 [[#include <rte_eal.h>
  #include <rte_ethdev.h>]],
 [[int main(int argc, char *argv[]) {
-	struct rte_eth_dev_info info;
-	rte_eal_init(argc, argv);
-	info.nb_rx_queues = 1;
-	return 0;
+	rte_pktmbuf_read(NULL, 0, 0, NULL);
 }]])],
 	[AC_MSG_RESULT([yes])],
 	[AC_MSG_RESULT([no])]
-	[AC_MSG_ERROR([urdma requires DPDK >= 16.07])])
+	[AC_MSG_ERROR([urdma requires DPDK >= 16.11])])
 LIBS=${old_LIBS}
 DPDK_LIBS="-Wl,--whole-archive,-ldpdk,--no-whole-archive"
 AC_SUBST([DPDK_LIBS])
