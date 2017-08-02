@@ -84,10 +84,10 @@ src_liburdma_liburdma_la_SOURCES = \
 	src/util/util.c \
 	src/util/util.h
 src_liburdma_liburdma_la_CFLAGS = $(DPDK_CFLAGS)
-src_liburdma_liburdma_la_CPPFLAGS = -Durdma_confdir='"$(sysconfdir)/rdma"' -I$(srcdir)/rdma-core/@ibverbs_pabi_version@ -I$(srcdir)/include -I$(srcdir)/src/util $(LIBNL3_CFLAGS) $(JSON_C_CFLAGS) $(DPDK_CPPFLAGS)
+src_liburdma_liburdma_la_CPPFLAGS = -Durdma_confdir='"$(sysconfdir)/rdma"' -I$(srcdir)/rdma-core/@ibverbs_pabi_version@ -I$(srcdir)/include -I$(srcdir)/src/util $(LIBNL3_CFLAGS) $(JSON_C_CFLAGS) $(DPDK_CPPFLAGS) $(SPDK_CPPFLAGS)
 src_liburdma_liburdma_la_LDFLAGS = -avoid-version \
-	-release @IBV_DEVICE_LIBRARY_EXTENSION@ $(LDFLAGS) $(DPDK_LDFLAGS)
-src_liburdma_liburdma_la_LIBADD = $(LIBNL3_LIBS) $(JSON_C_LIBS) $(DPDK_LIBS)
+	-release @IBV_DEVICE_LIBRARY_EXTENSION@ $(LDFLAGS) $(DPDK_LDFLAGS) $(SPDK_LDFLAGS)
+src_liburdma_liburdma_la_LIBADD = $(LIBNL3_LIBS) $(JSON_C_LIBS) $(SPDK_LIBS) $(DPDK_LIBS) -lrt
 verbsconfdir = $(sysconfdir)/libibverbs.d
 dist_verbsconf_DATA = src/liburdma/urdma.driver
 
@@ -101,9 +101,9 @@ src_urdmad_urdmad_SOURCES = \
 	src/util/config_file.h \
 	src/util/list.h
 src_urdmad_urdmad_CFLAGS = $(DPDK_CFLAGS)
-src_urdmad_urdmad_CPPFLAGS = -Durdma_confdir='"$(sysconfdir)/rdma"' -I$(srcdir)/include -I$(srcdir)/src/util $(LIBNL3_CFLAGS) $(JSON_C_CFLAGS) $(DPDK_CPPFLAGS)
-src_urdmad_urdmad_LDFLAGS = $(DPDK_LDFLAGS)
-src_urdmad_urdmad_LDADD = $(LIBNL3_LIBS) $(JSON_C_LIBS) $(DPDK_LIBS)
+src_urdmad_urdmad_CPPFLAGS = -Durdma_confdir='"$(sysconfdir)/rdma"' -I$(srcdir)/include -I$(srcdir)/src/util $(LIBNL3_CFLAGS) $(JSON_C_CFLAGS) $(DPDK_CPPFLAGS) $(SPDK_CPPFLAGS)
+src_urdmad_urdmad_LDFLAGS = $(DPDK_LDFLAGS) $(SPDK_LDFLAGS)
+src_urdmad_urdmad_LDADD = $(LIBNL3_LIBS) $(JSON_C_LIBS) $(SPDK_LIBS) $(DPDK_LIBS) -lrt
 
 bin_PROGRAMS += src/udp_pingpong/udp_pingpong
 src_udp_pingpong_udp_pingpong_SOURCES = \
@@ -145,9 +145,9 @@ src_kvstore_server_kvstore_server_SOURCES = \
 	src/util/util.c \
 	src/util/util.h
 src_kvstore_server_kvstore_server_CFLAGS = $(DPDK_CFLAGS)
-src_kvstore_server_kvstore_server_CPPFLAGS = -I$(srcdir)/include -I$(srcdir)/src/util -I$(srcdir)/src/liburdma $(CPPFLAGS) $(DPDK_CPPFLAGS)
-src_kvstore_server_kvstore_server_LDFLAGS = $(LDFLAGS) $(DPDK_LDFLAGS)
-src_kvstore_server_kvstore_server_LDADD = src/liburdma/liburdma.la $(DPDK_LIBS) -lm
+src_kvstore_server_kvstore_server_CPPFLAGS = -I$(srcdir)/include -I$(srcdir)/src/util -I$(srcdir)/src/liburdma $(CPPFLAGS) $(DPDK_CPPFLAGS) $(SPDK_CPPFLAGS)
+src_kvstore_server_kvstore_server_LDFLAGS = $(LDFLAGS) $(DPDK_LDFLAGS) $(SPDK_LDFLAGS)
+src_kvstore_server_kvstore_server_LDADD = src/liburdma/liburdma.la $(SPDK_LIBS) $(DPDK_LIBS) -lrt -lm
 
 bin_PROGRAMS += src/kvstore_client/kvstore_client
 src_kvstore_client_kvstore_client_SOURCES = \
@@ -157,9 +157,9 @@ src_kvstore_client_kvstore_client_SOURCES = \
 	src/util/util.c \
 	src/util/util.h
 src_kvstore_client_kvstore_client_CFLAGS = $(DPDK_CFLAGS)
-src_kvstore_client_kvstore_client_CPPFLAGS = -I$(srcdir)/include -I$(srcdir)/src/util -I$(srcdir)/src/liburdma $(CPPFLAGS) $(DPDK_CPPFLAGS)
-src_kvstore_client_kvstore_client_LDFLAGS = $(LDFLAGS) $(DPDK_LDFLAGS)
-src_kvstore_client_kvstore_client_LDADD = src/liburdma/liburdma.la $(DPDK_LIBS) -lm
+src_kvstore_client_kvstore_client_CPPFLAGS = -I$(srcdir)/include -I$(srcdir)/src/util -I$(srcdir)/src/liburdma $(CPPFLAGS) $(DPDK_CPPFLAGS) $(SPDK_CPPFLAGS)
+src_kvstore_client_kvstore_client_LDFLAGS = $(LDFLAGS) $(DPDK_LDFLAGS) $(SPDK_LDFLAGS)
+src_kvstore_client_kvstore_client_LDADD = src/liburdma/liburdma.la $(SPDK_LIBS) $(DPDK_LIBS) -lrt -lm
 
 check_PROGRAMS = tests/binheap tests/list_test
 tests_binheap_SOURCES = tests/binheap.c \

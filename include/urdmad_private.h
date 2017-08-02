@@ -148,12 +148,13 @@ struct urdmad_sock_hello_resp {
 	uint8_t proto_version;
 	uint8_t max_lcore;
 	uint16_t device_count;
-	uint32_t reserved12;
+	uint16_t shm_id;
+	uint16_t reserved14;
 	uint64_t rdma_atomic_mutex_addr;
 	uint32_t lcore_mask[RTE_MAX_LCORE / 32];
 	uint16_t max_qp[];
 };
-static_assert(offsetof(struct urdmad_sock_hello_resp, reserved12) == 12,
+static_assert(offsetof(struct urdmad_sock_hello_resp, reserved14) == 14,
 		"reserved12 field is at wrong offset");
 
 union urdmad_sock_any_msg {

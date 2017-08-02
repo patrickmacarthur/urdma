@@ -46,6 +46,7 @@
 
 #include <assert.h>
 #include <fcntl.h>
+#include <getopt.h>
 #include <poll.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -67,6 +68,7 @@
 #include <rte_malloc.h>
 #include <rte_mempool.h>
 #include <rte_ring.h>
+#include <spdk/env.h>
 
 #include "config_file.h"
 #include "interface.h"
@@ -536,6 +538,7 @@ handle_hello(struct urdma_process *process, struct urdmad_sock_hello_req *req)
 	resp->device_count = rte_cpu_to_be_16(driver->port_count);
 	resp->rdma_atomic_mutex_addr =
 		rte_cpu_to_be_64((uintptr_t)rdma_atomic_mutex);
+	resp->shm_id = rte_cpu_to_be_16(getpid());
 	for (i = 0; i < RTE_DIM(resp->lcore_mask); i++) {
 		resp->lcore_mask[i] = rte_cpu_to_be_32(process->core_mask[i]);
 	}
@@ -1353,6 +1356,7 @@ int
 main(int argc, char *argv[])
 {
 	char **arg;
+	struct spdk_env_opts opts;
 
 	rte_set_application_usage_hook(&usage);
 
@@ -1383,15 +1387,12 @@ main(int argc, char *argv[])
 		}
 	}
 
-	/* rte_eal_init does nothing and returns -1 if it was already called
-	 * (although this behavior is not documented).  rte_eal_init also
-	 * crashes the whole program if it fails for any other reason, so we
-	 * can depend on a negative return code meaning that rte_eal_init was
-	 * already called.  This means that a program can accept the default
-	 * EAL configuration by not calling rte_eal_init() before calling into
-	 * a verbs function, allowing us to work with unmodified verbs
-	 * applications. */
-	rte_eal_init(argc, argv);
+	spdk_env_opts_init(&opts);
+	opts.name = argv[0];
+	opts.core_mask = "0x3";
+	opts.shm_id = getpid();
+
+	spdk_env_init(&opts);
 
 	init_core_mask();
 

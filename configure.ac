@@ -195,6 +195,17 @@ if test "x$dpdk_cv_func_which_rte_ring_enqueue_burst" = "xno"; then
 fi
 DPDK_CHECK_SIZEOF_PORT_ID
 
+AC_ARG_WITH([spdk], [AS_HELP_STRING([--with-spdk],
+				    [Build urdma with SPDK support])],
+	    [], [with_spdk=yes])
+if test "x${with_spdk}" != xyes && test "x${with_spdk}" != xno; then
+	spdk_prefix=${with_spdk}
+else
+	spdk_prefix=
+fi
+AS_IF([test "x${with_spdk}" != xno],
+      [URDMA_LIB_SPDK([18.10], [${spdk_prefix}])])
+
 AC_CONFIG_FILES([Makefile src/kmod/Makefile])
 AC_OUTPUT
 

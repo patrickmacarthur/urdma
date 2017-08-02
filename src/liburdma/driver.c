@@ -62,6 +62,8 @@
 #include <rte_malloc.h>
 #include <rte_ring.h>
 
+#include <spdk/env.h>
+
 #include <netlink/addr.h>
 #include <netlink/cache.h>
 #include <netlink/errno.h>
@@ -310,25 +312,11 @@ err:
 } /* setup_socket */
 
 
-static void
-free_arg_list(int argc, char **argv)
-{
-	for (int i = 0; i < argc; ++i) {
-		free(argv[i]);
-	}
-	free(argv);
-} /* free_arg_list */
-
-
 /** Parses the config file and fills in sock_name with the name of the socket to
- * use, and eal_argv with the user-requested argument, in addition to the
- * required arguments "--proc-type=secondary" and "-c".  (*eal_argv)[*eal_argc -
- * 1] is left NULL and must be filled in by the caller with the coremask to use,
- * which is determined by the socket identified by *sock_name. */
+ * use. */
 static bool
-do_config(char **sock_name, int *eal_argc, char ***eal_argv)
+do_config(char **sock_name)
 {
-	static const size_t hostnamesize = HOST_NAME_MAX;
 	struct usiw_config config;
 	bool result = false;
 	int ret;
@@ -346,56 +334,9 @@ do_config(char **sock_name, int *eal_argc, char ***eal_argv)
 				strerror(errno));
 		goto close_config;
 	}
-
-	/* Need to allocate argc + 4 elements for EAL args
-	 * argc returned by urdma__config_file_get_eal_argc does not include
-	 * process name
-	 *
-	 * argv array must contain:
-	 * [0] "<procname>"
-	 * [1..argc-1] "<argv>"
-	 * [argc] "--proc-type=secondary"
-	 * [argc+1] "--file-prefix"
-	 * [argc+2] "<hostname>"
-	 * [argc+3] "-c"
-	 * [argc+4] "<coremask>"
-	 * [argc+5] NULL
-	 */
-	*eal_argc = urdma__config_file_get_eal_args(&config, NULL);
-	*eal_argv = calloc(*eal_argc + 6, sizeof(**eal_argv));
-	if (!(*eal_argv)) {
-		goto free_sock_name;
-	}
-
-	if (urdma__config_file_get_eal_args(&config, *eal_argv) < 0) {
-		fprintf(stderr, "Could not parse EAL arguments from config file: %s\n",
-				strerror(errno));
-		goto free_eal_args;
-	}
-	if (!((*eal_argv)[*eal_argc] = strdup("--proc-type=secondary"))) {
-		goto free_eal_args;
-	}
-	(*eal_argc)++;
-	if (!((*eal_argv)[*eal_argc] = strdup("--file-prefix"))) {
-		goto free_eal_args;
-	}
-	(*eal_argc)++;
-	if (!((*eal_argv)[*eal_argc] = malloc(hostnamesize))) {
-		goto free_eal_args;
-	}
-	if (gethostname((*eal_argv)[*eal_argc], hostnamesize)) {
-		goto free_eal_args;
-	}
-	(*eal_argc)++;
-	if (!((*eal_argv)[*eal_argc] = strdup("-c"))) {
-		goto free_eal_args;
-	}
-	*eal_argc += 2;
 	result = true;
 	goto close_config;
 
-free_eal_args:
-	free_arg_list(*eal_argc, *eal_argv);
 free_sock_name:
 	free(*sock_name);
 close_config:
@@ -446,6 +387,7 @@ do_hello(void)
 	for (i = 0; i < RTE_DIM(resp->lcore_mask); i++) {
 		driver->lcore_mask[i] = rte_be_to_cpu_32(resp->lcore_mask[i]);
 	}
+	driver->shm_id = rte_be_to_cpu_16(resp->shm_id);
 	driver->device_count = rte_be_to_cpu_16(resp->device_count);
 	driver->rdma_atomic_mutex = (void *)(uintptr_t)rte_be_to_cpu_64(
 				resp->rdma_atomic_mutex_addr);
@@ -493,17 +435,11 @@ format_coremask(uint32_t *coremask, size_t array_size)
 static void *
 our_eal_master_thread(void *sem)
 {
-	char **eal_argv;
-	char **argv_copy;
+	struct spdk_env_opts opts;
 	char *sock_name;
 	int eal_argc, ret;
 
-	if (!do_config(&sock_name, &eal_argc, &eal_argv)) {
-		/* driver will be NULL either because this previously failed or
-		 * because it is a global variable which is initialized from 0'd
-		 * memory, so it is safe to call free() on it regardless */
-		goto err;
-	}
+	spdk_env_opts_init(&opts);
 
 	driver = calloc(1, sizeof(*driver) + rte_ring_get_memsize(
 							NEW_CTX_MAX + 1));
@@ -511,6 +447,7 @@ our_eal_master_thread(void *sem)
 		goto err;
 	list_head_init(&driver->ctxs);
 
+	do_config(&sock_name);
 	driver->urdmad_fd = setup_socket(sock_name);
 	if (driver->urdmad_fd < 0)
 		goto err;
@@ -520,35 +457,13 @@ our_eal_master_thread(void *sem)
 				strerror(errno));
 		goto close_fd;
 	}
-	eal_argv[eal_argc - 1] = format_coremask(driver->lcore_mask,
-						 RTE_DIM(driver->lcore_mask));
-
 	/* Send log messages to stderr instead of syslog */
-	rte_openlog_stream(stderr);
+	opts.core_mask = format_coremask(driver->lcore_mask,
+					 RTE_DIM(driver->lcore_mask));
+	opts.shm_id = driver->shm_id;
 
-	/* rte_eal_init does nothing and returns -1 if it was already called
-	 * (although this behavior is not documented).  rte_eal_init also
-	 * crashes the whole program if it fails for any other reason, so we
-	 * can depend on a negative return code meaning that rte_eal_init was
-	 * already called.  This means that a program can accept the default
-	 * EAL configuration by not calling rte_eal_init() before calling into
-	 * a verbs function, allowing us to work with unmodified verbs
-	 * applications.
-	 *
-	 * Additionally, rte_eal_init mutates the argument list.  In particular,
-	 * it sets eal_argv[eal_argc - 1] = eal_argv[0], trying to be helpful if
-	 * an application wishes to parse its own argument list.  To be
-	 * completely safe, we make a copy of the argument list, and free all
-	 * elements of the copy before freeing the argument list itself. */
-	argv_copy = malloc(eal_argc * sizeof(*eal_argv));
-	if (argv_copy) {
-		memcpy(argv_copy, eal_argv, eal_argc * sizeof(*eal_argv));
-	}
-	rte_eal_init(eal_argc, eal_argv);
-	if (argv_copy) {
-		free_arg_list(eal_argc, argv_copy);
-	}
-	free(eal_argv);
+	rte_openlog_stream(stderr);
+	spdk_env_init(&opts);
 
 	driver->new_ctxs = (struct rte_ring *)(driver + 1);
 	ret = rte_ring_init(driver->new_ctxs, "new_ctx_ring", NEW_CTX_MAX + 1,

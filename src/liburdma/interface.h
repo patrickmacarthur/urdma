@@ -411,6 +411,7 @@ struct usiw_driver {
 	uint16_t device_count;
 	uint16_t *max_qp;
 	pthread_mutex_t *rdma_atomic_mutex;
+	uint16_t shm_id;
 };
 
 /** Starts the progress thread. */
