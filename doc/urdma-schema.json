@@ -9,6 +9,13 @@
             "items": { "$ref": "#/definitions/port" },
             "uniqueItems": true
         },
+        "nvme": {
+            "type": "array",
+	    "description": "NVMe devices to enable",
+            "minItems": 0,
+            "items": { "$ref": "#/definitions/nvme_device" },
+            "uniqueItems": true
+        },
         "eal_args": {
             "type": "object",
             "description": "EAL arguments for subprocesses",
@@ -69,6 +76,16 @@
                 }
             },
             "additionalProperties": false
+        },
+        "nvme_device": {
+            "type": "object",
+	    "description": "Settings for the given NVMe device",
+            "properties": {
+                "pci_address": {
+		    "type": "string",
+		    "description": "PCI address of local NVMe device"
+		}
+            }
         }
     }
 }
