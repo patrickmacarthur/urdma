@@ -69,6 +69,7 @@
 #include <rte_mempool.h>
 #include <rte_ring.h>
 #include <spdk/env.h>
+#include <spdk/nvme.h>
 
 #include "config_file.h"
 #include "interface.h"
@@ -1200,6 +1201,16 @@ setup_timer(int interval_ms)
 
 
 static void
+nvme_attach_cb(void *ctx,
+	       const struct spdk_nvme_transport_id *trid,
+	       struct spdk_nvme_ctrlr *ctrlr,
+	       const struct spdk_nvme_ctrlr_opts *opts)
+{
+	RTE_LOG(INFO, USER1, "Attach NVMe device: traddr:%s\n", trid->traddr);
+} /* nvme_attach_cb */
+
+
+static void
 do_init_driver(void)
 {
 	struct usiw_port_config *port_config;
@@ -1234,6 +1245,13 @@ do_init_driver(void)
 	timer_ms = urdma__config_file_get_timer_interval(&config);
 	if (!timer_ms) {
 		timer_ms = 5000;
+	}
+
+	if ((retval = spdk_nvme_probe(NULL, &config,
+			urdma__config_file_has_nvme_dev, nvme_attach_cb,
+			NULL)) < 0) {
+		RTE_LOG(WARNING, USER1, "could not probe NVMe devices: %d\n",
+				retval);
 	}
 
 	urdma__config_file_close(&config);

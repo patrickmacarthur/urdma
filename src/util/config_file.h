@@ -37,6 +37,7 @@
  * SOFTWARE.
  */
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <rte_pci.h>
 
@@ -48,6 +49,8 @@ enum urdma_port_id_type {
 };
 
 struct json_object;
+struct spdk_nvme_transport_id;
+struct spdk_nvme_ctrlr_opts;
 
 struct usiw_port_config {
 	int id_type;
@@ -77,6 +80,11 @@ urdma__config_file_get_sock_name(struct usiw_config *config);
 
 int
 urdma__config_file_get_timer_interval(struct usiw_config *config);
+
+bool
+urdma__config_file_has_nvme_dev(void *config,
+				const struct spdk_nvme_transport_id *trid,
+				struct spdk_nvme_ctrlr_opts *opts);
 
 int
 urdma__config_file_open(struct usiw_config *config);

@@ -52,6 +52,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/prctl.h>
+#include <spdk/nvme.h>
 
 #include "config_file.h"
 #include "util.h"
@@ -450,6 +451,58 @@ urdma__config_file_get_timer_interval(struct usiw_config *config)
 
 	return json_object_get_int(interval);
 } /* urdma__config_file_get_timer_interval */
+
+/* Returns true if the specified NVMe device has been requested in the user's
+ * configuration file. */
+bool
+urdma__config_file_has_nvme_dev(void *ctx,
+				const struct spdk_nvme_transport_id *trid,
+				struct spdk_nvme_ctrlr_opts *opts)
+{
+	struct usiw_config *config = ctx;
+	struct spdk_nvme_transport_id elem_trid;
+	struct json_object *devs, *dev, *obj;
+	const char *addrstr;
+	int dev_count, i;
+
+	RTE_LOG(INFO, USER1, "Probe NVMe device: traddr:%s\n", trid->traddr);
+
+	if (trid->trtype != SPDK_NVME_TRANSPORT_PCIE) {
+		return false;
+	}
+
+	if (!json_object_object_get_ex(config->root, "nvme", &devs)) {
+		return false;
+	}
+
+	if (!json_object_is_type(devs, json_type_array)) {
+		return false;
+	}
+
+	dev_count = json_object_array_length(devs);
+	for (i = 0; i < dev_count; i++) {
+		dev = json_object_array_get_idx(devs, i);
+		if (!json_object_is_type(dev, json_type_object)) {
+			continue;
+		}
+		if (!json_object_object_get_ex(dev, "pci_address", &obj)) {
+			continue;
+		}
+		if (!json_object_is_type(obj, json_type_string)) {
+			continue;
+		}
+		addrstr = json_object_get_string(obj);
+		memset(&elem_trid, 0, sizeof(elem_trid));
+		elem_trid.trtype = SPDK_NVME_TRANSPORT_PCIE;
+		strncpy(elem_trid.traddr, addrstr,
+			sizeof(elem_trid.traddr) - 1);
+		elem_trid.traddr[sizeof(elem_trid.traddr) - 1] = '\0';
+		if (!spdk_nvme_transport_id_compare(trid, &elem_trid)) {
+			return true;
+		}
+	}
+	return false;
+} /* urdma__config_file_has_nvme_dev */
 
 
 /** Parses the given JSON configuration file for the IPv4 addresses to assign
