@@ -700,6 +700,7 @@ event_loop(void *arg)
 static void
 setup_base_filters(struct usiw_port *iface)
 {
+	struct rte_eth_fdir_info info;
 	struct rte_eth_fdir_filter_info filter_info;
 	int retval;
 
@@ -716,8 +717,17 @@ setup_base_filters(struct usiw_port *iface)
 	retval = rte_eth_dev_filter_ctrl(iface->portid, RTE_ETH_FILTER_FDIR,
 			RTE_ETH_FILTER_SET, &filter_info);
 	if (retval != 0) {
-		RTE_LOG(WARNING, USER1, "Could not set fdir filter info on port %" PRIu16 ": %s\n",
-				iface->portid, strerror(-retval));
+		retval = rte_eth_dev_filter_ctrl(iface->portid,
+				RTE_ETH_FILTER_FDIR, RTE_ETH_FILTER_INFO,
+				&info);
+		if (retval != 0) {
+			rte_exit(EXIT_FAILURE, "Could not get fdir filter info on port %" PRIu16 ": %s\n",
+					iface->portid, strerror(-retval));
+		}
+
+		RTE_LOG(DEBUG, USER1, "fdir mask ipv4.src_ip %08x ipv4.dst_ip %08x src_port %04x dst_port %04x\n",
+				info.mask.ipv4_mask.src_ip, info.mask.ipv4_mask.dst_ip,
+				info.mask.src_port_mask, info.mask.dst_port_mask);
 	}
 } /* setup_base_filters */
 
