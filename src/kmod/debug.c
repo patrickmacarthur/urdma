@@ -290,7 +290,7 @@ void siw_debugfs_del_device(struct siw_dev *sdev)
 
 void siw_debug_init(void)
 {
-	siw_debugfs = debugfs_create_dir("siw", NULL);
+	siw_debugfs = debugfs_create_dir("urdma", NULL);
 
 	if (!siw_debugfs || siw_debugfs == ERR_PTR(-ENODEV)) {
 		pr_debug(DBG_DM ": could not init debugfs\n");
