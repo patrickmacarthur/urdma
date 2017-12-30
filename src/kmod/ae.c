@@ -67,7 +67,7 @@ void siw_qp_event(struct siw_qp *qp, enum ib_event_type etype)
 	event.element.qp = ofa_qp;
 
 	if (!(qp->attrs.flags & SIW_QP_IN_DESTROY) && ofa_qp->event_handler) {
-		pr_debug(DBG_EH ": reporting %d\n", etype);
+		dev_dbg(&ofa_qp->device->dev, "reporting qp event %d\n", etype);
 		(*ofa_qp->event_handler)(&event, ofa_qp->qp_context);
 	}
 }
@@ -82,7 +82,7 @@ void siw_cq_event(struct siw_cq *cq, enum ib_event_type etype)
 	event.element.cq = ofa_cq;
 
 	if (ofa_cq->event_handler) {
-		pr_debug(DBG_EH ": reporting %d\n", etype);
+		dev_dbg(&ofa_cq->device->dev, "reporting cq event %d\n", etype);
 		(*ofa_cq->event_handler)(&event, ofa_cq->cq_context);
 	}
 }
@@ -95,6 +95,6 @@ void siw_port_event(struct siw_dev *sdev, u8 port, enum ib_event_type etype)
 	event.device = &sdev->ofa_dev;
 	event.element.port_num = port;
 
-	pr_debug(DBG_EH ": reporting %d\n", etype);
+	dev_dbg(&sdev->ofa_dev.dev, "reporting port event %d\n", etype);
 	ib_dispatch_event(&event);
 }

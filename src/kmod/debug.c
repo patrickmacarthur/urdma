@@ -265,18 +265,21 @@ void siw_debugfs_add_device(struct siw_dev *sdev)
 		entry = debugfs_create_file("qp", S_IRUSR, sdev->debugfs,
 					    (void *)sdev, &siw_qp_debug_fops);
 		if (!entry)
-			pr_debug(DBG_DM ": could not create 'qp' entry\n");
+			dev_dbg(&sdev->ofa_dev.dev,
+				"could not create 'qp' entry\n");
 
 		entry = debugfs_create_file("cep", S_IRUSR, sdev->debugfs,
 					    (void *)sdev, &siw_cep_debug_fops);
 		if (!entry)
-			pr_debug(DBG_DM ": could not create 'cep' entry\n");
+			dev_dbg(&sdev->ofa_dev.dev,
+				"could not create 'cep' entry\n");
 
 		entry = debugfs_create_file("stats", S_IRUSR, sdev->debugfs,
 					    (void *)sdev,
 					    &siw_stats_debug_fops);
 		if (!entry)
-			pr_debug(DBG_DM ": could not create 'stats' entry\n");
+			dev_dbg(&sdev->ofa_dev.dev,
+				"could not create 'stats' entry\n");
 	}
 }
 
@@ -293,7 +296,6 @@ void siw_debug_init(void)
 	siw_debugfs = debugfs_create_dir("urdma", NULL);
 
 	if (!siw_debugfs || siw_debugfs == ERR_PTR(-ENODEV)) {
-		pr_debug(DBG_DM ": could not init debugfs\n");
 		siw_debugfs = NULL;
 	}
 }

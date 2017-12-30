@@ -136,7 +136,8 @@ static ssize_t siw_event_file_write(struct file *filp, const char __user *buf,
 		siw_cq_put(cq);
 		break;
 	default:
-		pr_debug(" got invalid event type %u\n", event.event_type);
+		dev_dbg(&file->ctx->sdev->ofa_dev.dev,
+			"got invalid event type %u\n", event.event_type);
 		rv = -EINVAL;
 		goto out;
 	}
@@ -217,10 +218,8 @@ struct ib_ucontext *siw_alloc_ucontext(struct ib_device *ofa_dev,
 	struct siw_dev *sdev = siw_dev_ofa2siw(ofa_dev);
 	int rv;
 
-	pr_debug(DBG_CM "(device=%s)\n", ofa_dev->name);
-
 	if (atomic_inc_return(&sdev->num_ctx) > SIW_MAX_CONTEXT) {
-		pr_debug(": Out of CONTEXT's\n");
+		dev_err(&ofa_dev->dev, "Out of CONTEXT's\n");
 		rv = -ENOMEM;
 		goto err_out;
 	}
@@ -392,19 +391,17 @@ struct ib_pd *siw_alloc_pd(struct ib_device *ofa_dev,
 	int rv;
 
 	if (atomic_inc_return(&sdev->num_pd) > SIW_MAX_PD) {
-		pr_debug(": Out of PD's\n");
+		dev_err(&ofa_dev->dev, "Out of PD's\n");
 		rv = -ENOMEM;
 		goto err_out;
 	}
 	pd = kmalloc(sizeof *pd, GFP_KERNEL);
 	if (!pd) {
-		pr_debug(": malloc\n");
 		rv = -ENOMEM;
 		goto err_out;
 	}
 	rv = siw_pd_add(sdev, pd);
 	if (rv) {
-		pr_debug(": siw_pd_add\n");
 		rv = -ENOMEM;
 		goto err_out;
 	}
@@ -514,26 +511,23 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd,
 
 	int rv = 0;
 
-	pr_debug(DBG_OBJ DBG_CM ": new QP on device %s\n",
-		ofa_dev->name);
-
 	if (!ofa_pd->uobject) {
-		pr_debug(": This driver does not support kernel clients\n");
+		dev_notice_once(&ofa_dev->dev,
+			"This driver does not support kernel clients\n");
 		return ERR_PTR(-EINVAL);
 	}
 
 	if (atomic_inc_return(&sdev->num_qp) > SIW_MAX_QP) {
-		pr_debug(": Out of QP's\n");
+		dev_warn_once(&ofa_dev->dev, "out of QP's\n");
 		rv = -ENOMEM;
 		goto err_out;
 	}
 	if (attrs->qp_type != IB_QPT_RC) {
-		pr_debug(": Only RC QP's supported\n");
+		dev_warn_once(&ofa_dev->dev, "Only RC QP's supported\n");
 		rv = -EINVAL;
 		goto err_out;
 	}
 	if (attrs->srq) {
-		pr_debug(": SRQ is not supported\n");
 		rv = -EINVAL;
 		goto err_out;
 	}
@@ -542,14 +536,13 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd,
 	rcq = siw_cq_id2obj(sdev, ((struct siw_cq *)attrs->recv_cq)->hdr.id);
 
 	if (!scq || !rcq) {
-		pr_debug(DBG_OBJ ": Fail: SCQ: 0x%p, RCQ: 0x%p\n",
+		dev_err(&ofa_dev->dev, "create QP requires non-NULL SCQ: 0x%p, RCQ: 0x%p\n",
 			scq, rcq);
 		rv = -EINVAL;
 		goto err_out;
 	}
 	qp = kzalloc(sizeof *qp, GFP_KERNEL);
 	if (!qp) {
-		pr_debug(": kzalloc\n");
 		rv = -ENOMEM;
 		goto err_out;
 	}
@@ -628,8 +621,9 @@ int siw_ofed_modify_qp(struct ib_qp *ofa_qp, struct ib_qp_attr *attr,
 	struct siw_qp		*qp = siw_qp_ofa2siw(ofa_qp);
 	int			rv = 0;
 
-	pr_debug(DBG_CM "(QP%d) modify_qp attr_mask %x\n",
-			QP_ID(qp), attr_mask);
+	dev_dbg(&ofa_qp->device->dev,
+		"(QP%d) modify_qp attr_mask %x\n",
+		QP_ID(qp), attr_mask);
 
 	memset(&new_attrs, 0, sizeof new_attrs);
 
@@ -645,8 +639,9 @@ int siw_ofed_modify_qp(struct ib_qp *ofa_qp, struct ib_qp_attr *attr,
 			new_attrs.flags |= SIW_RDMA_BIND_ENABLED;
 	}
 	if (attr_mask & IB_QP_STATE) {
-		pr_debug(DBG_CM "(QP%d): Desired IB QP state: %s\n",
-			   QP_ID(qp), ib_qp_state_to_string[attr->qp_state]);
+		dev_dbg(&ofa_qp->device->dev,
+			"(QP%d) desired IB QP state: %s\n",
+			QP_ID(qp), ib_qp_state_to_string[attr->qp_state]);
 
 		new_attrs.state = ib_qp_state_to_siw_qp_state[attr->qp_state];
 
@@ -663,7 +658,6 @@ int siw_ofed_modify_qp(struct ib_qp *ofa_qp, struct ib_qp_attr *attr,
 
 	up_write(&qp->state_lock);
 
-	pr_debug(DBG_CM "(QP%d): Exit with %d\n", QP_ID(qp), rv);
 	return rv;
 }
 
@@ -672,7 +666,8 @@ int siw_destroy_qp(struct ib_qp *ofa_qp)
 	struct siw_qp		*qp = siw_qp_ofa2siw(ofa_qp);
 	struct siw_qp_attrs	qp_attrs;
 
-	pr_debug(DBG_CM "(QP%d): SIW QP state=%d, cep=0x%p\n",
+	dev_dbg(&ofa_qp->device->dev,
+		"(QP%d): destroy QP state=%d, cep=0x%p\n",
 		QP_ID(qp), qp->attrs.state, qp->cep);
 
 	/*
@@ -776,23 +771,23 @@ static struct ib_cq *do_siw_create_cq(struct ib_device *ofa_dev,
 	int rv;
 
 	if (!ofa_dev) {
-		pr_warn("NO OFA device\n");
+		dev_err_once(&ofa_dev->dev, "NO OFA device\n");
 		rv = -ENODEV;
 		goto err_out;
 	}
 	if (atomic_inc_return(&sdev->num_cq) > SIW_MAX_CQ) {
-		pr_debug(": Out of CQ's\n");
+		dev_warn_once(&ofa_dev->dev, "out of CQ's\n");
 		rv = -ENOMEM;
 		goto err_out;
 	}
 	if (init_attr->cqe < 1) {
-		pr_debug(": CQE: %d\n", init_attr->cqe);
+		dev_warn(&ofa_dev->dev,
+			"invalid CQE value: %d\n", init_attr->cqe);
 		rv = -EINVAL;
 		goto err_out;
 	}
 	cq = kzalloc(sizeof *cq, GFP_KERNEL);
 	if (!cq) {
-		pr_debug(":  kmalloc\n");
 		rv = -ENOMEM;
 		goto err_out;
 	}
@@ -819,8 +814,6 @@ static struct ib_cq *do_siw_create_cq(struct ib_device *ofa_dev,
 err_out_idr:
 	siw_remove_obj(&sdev->idr_lock, &sdev->cq_idr, &cq->hdr);
 err_out:
-	pr_debug(DBG_OBJ ": CQ creation failed %d", rv);
-
 	kfree(cq);
 	atomic_dec(&sdev->num_cq);
 

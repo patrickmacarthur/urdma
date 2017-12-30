@@ -88,15 +88,14 @@ static void siw_socket_disassoc(struct socket *s)
 	struct sock	*sk = s->sk;
 	struct siw_cep	*cep;
 
-	if (sk) {
+	if (!WARN_ONCE(!sk, "cannot restore sk callbacks: no sk\n")) {
 		write_lock_bh(&sk->sk_callback_lock);
 		cep = sk_to_cep(sk);
 		if (cep) {
 			siw_cep_put(cep);
 		}
 		write_unlock_bh(&sk->sk_callback_lock);
-	} else
-		pr_warn("cannot restore sk callbacks: no sk\n");
+	}
 }
 
 
@@ -147,7 +146,7 @@ static struct siw_cep *siw_cep_alloc(struct siw_dev  *sdev)
 		spin_unlock_irqrestore(&sdev->idr_lock, flags);
 		atomic_inc(&sdev->num_cep);
 
-		pr_debug(DBG_OBJ DBG_CM "(CEP 0x%p): New Object\n", cep);
+		dev_dbg(&sdev->ofa_dev.dev, "(CEP 0x%p): New Object\n", cep);
 	}
 	return cep;
 }
@@ -190,7 +189,7 @@ static void siw_cep_set_inuse(struct siw_cep *cep)
 	unsigned long flags;
 	int rv;
 retry:
-	pr_debug(DBG_CM " (CEP 0x%p): use %d\n",
+	dev_dbg(&cep->sdev->ofa_dev.dev, "(CEP 0x%p): in_use %d\n",
 		cep, cep->in_use);
 
 	spin_lock_irqsave(&cep->lock, flags);
@@ -211,7 +210,7 @@ static void siw_cep_set_free(struct siw_cep *cep)
 {
 	unsigned long flags;
 
-	pr_debug(DBG_CM " (CEP 0x%p): use %d\n",
+	dev_dbg(&cep->sdev->ofa_dev.dev, "(CEP 0x%p): in_use %d\n",
 		cep, cep->in_use);
 
 	spin_lock_irqsave(&cep->lock, flags);
@@ -228,7 +227,7 @@ static void __siw_cep_dealloc(struct kref *ref)
 	struct siw_dev *sdev = cep->sdev;
 	unsigned long flags;
 
-	pr_debug(DBG_OBJ DBG_CM "(CEP 0x%p): Free Object\n", cep);
+	dev_dbg(&sdev->ofa_dev.dev, "(CEP 0x%p): Free Object\n", cep);
 
 	WARN_ON(cep->listen_cep);
 
@@ -270,7 +269,6 @@ static int siw_cm_alloc_work(struct siw_cep *cep, int num)
 		if (!work) {
 			if (!(list_empty(&cep->work_freelist)))
 				siw_cm_free_work(cep);
-			pr_debug(" Failed\n");
 			return -ENOMEM;
 		}
 		work->cep = cep;
@@ -319,8 +317,8 @@ static int siw_cm_upcall(struct siw_cep *cep, enum iw_cm_event_type reason,
 	} else
 		cm_id = cep->cm_id;
 
-	pr_debug(DBG_CM " (QP%d): cep=0x%p, id=0x%p, dev(id)=%s, "
-		"reason=%d, status=%d\n",
+	dev_dbg(&cep->sdev->ofa_dev.dev,
+		"(QP %d): cep=0x%p, id=0x%p, dev(id)=%s, reason=%d, status=%d\n",
 		cep->qp ? QP_ID(cep->qp) : -1, cep, cm_id,
 		cm_id->device->name, reason, status);
 
@@ -348,15 +346,16 @@ void siw_qp_cm_drop(struct siw_qp *qp, int schedule)
 		siw_cep_set_inuse(cep);
 
 		if (cep->state == SIW_EPSTATE_CLOSED) {
-			pr_debug(DBG_CM "(): cep=0x%p, already closed\n", cep);
+			dev_dbg(&qp->ofa_qp.device->dev,
+				"(CEP 0x%p) already closed\n", cep);
 			goto out;
 		}
 		/*
 		 * Immediately close socket
 		 */
-		pr_debug(DBG_CM "(): immediate close, cep=0x%p, state=%d, "
-			"id=0x%p, sock=0x%p, QP%d\n", cep, cep->state,
-			cep->cm_id, cep->llp.sock,
+		dev_dbg(&qp->ofa_qp.device->dev,
+			"(CEP 0x%p) immediate close, state=%d, id=0x%p, sock=0x%p, QP%d\n",
+			cep, cep->state, cep->cm_id, cep->llp.sock,
 			cep->qp ? QP_ID(cep->qp) : -1);
 
 		if (cep->cm_id) {
@@ -408,7 +407,7 @@ out:
 
 void siw_cep_put(struct siw_cep *cep)
 {
-	pr_debug(DBG_OBJ DBG_CM "(CEP 0x%p): New refcount: %d\n",
+	dev_dbg(&cep->sdev->ofa_dev.dev, "(CEP 0x%p): New refcount: %d\n",
 		cep, kref_read(&cep->ref) - 1);
 
 	if (WARN_ON_ONCE(kref_read(&cep->ref) < 1)) {
@@ -420,7 +419,7 @@ void siw_cep_put(struct siw_cep *cep)
 void siw_cep_get(struct siw_cep *cep)
 {
 	kref_get(&cep->ref);
-	pr_debug(DBG_OBJ DBG_CM "(CEP 0x%p): New refcount: %d\n",
+	dev_dbg(&cep->sdev->ofa_dev.dev, "(CEP 0x%p): New refcount: %d\n",
 		cep, kref_read(&cep->ref));
 }
 
@@ -448,17 +447,14 @@ static int siw_send_trpreqrep(struct siw_cep *cep, const void *pdata,
 		 * IN UC service, the socket is currently not yet connected.
 		 * Therefore, destination address must be provided.
 		 */
-		u8 *l_ip, *r_ip;
+		__be32 l_ip, r_ip;
 
-		l_ip = (u8 *) &to_sockaddr_in(cep->llp.laddr).sin_addr.s_addr;
-		r_ip = (u8 *) &to_sockaddr_in(cep->llp.raddr).sin_addr.s_addr;
-		pr_debug(DBG_CM
-			"  mpa send laddr: ipv4=%d.%d.%d.%d, port=%d; "
-			"  mpa send raddr: ipv4=%d.%d.%d.%d, port=%d\n",
-			l_ip[0], l_ip[1], l_ip[2], l_ip[3],
-			ntohs(to_sockaddr_in(cep->llp.laddr).sin_port),
-			r_ip[0], r_ip[1], r_ip[2], r_ip[3],
-			ntohs(to_sockaddr_in(cep->llp.raddr).sin_port));
+		l_ip = to_sockaddr_in(cep->llp.laddr).sin_addr.s_addr;
+		r_ip = to_sockaddr_in(cep->llp.raddr).sin_addr.s_addr;
+		dev_dbg(&cep->sdev->ofa_dev.dev,
+			"mpa send laddr: ipv4=%pI4, port=%d; mpa send raddr: ipv4=%pI4, port=%d\n",
+			&l_ip, ntohs(to_sockaddr_in(cep->llp.laddr).sin_port),
+			&r_ip, ntohs(to_sockaddr_in(cep->llp.raddr).sin_port));
 		msg.msg_name = &cep->llp.raddr;
 		msg.msg_namelen = sizeof cep->llp.raddr;
 	}
@@ -519,7 +515,8 @@ static int siw_recv_trp_rr(struct siw_cep *cep)
 			|| rv != sizeof(struct trp_rr) + pd_len)
 		return -EPROTO;
 
-	pr_debug(DBG_CM " %d bytes private_data received\n", pd_len);
+	dev_dbg(&cep->sdev->ofa_dev.dev,
+		"(CEP 0x%p) %d bytes private_data received\n", cep, pd_len);
 
 	memcpy(&cep->llp.raddr, &peer_addr, sizeof(cep->llp.raddr));
 	return 0;
@@ -554,9 +551,10 @@ static int siw_proc_trpreq(struct siw_cep *cep)
 	cep->state = SIW_EPSTATE_RECVD_MPAREQ;
 	cep->ird = ntohs(req->params.ord);
 	cep->ord = ntohs(req->params.ird);
-	pr_debug(DBG_CM "(cep=0x%p): recved TRP Request ORD: %d (max: %d), IRD: %d (max: %d)\n",
-			cep, cep->ord, cep->sdev->attrs.max_ord,
-			cep->ird, cep->sdev->attrs.max_ird);
+	dev_dbg(&cep->sdev->ofa_dev.dev,
+		"(CEP 0x%p): recved TRP Request ORD: %d (max: %d), IRD: %d (max: %d)\n",
+		cep, cep->ord, cep->sdev->attrs.max_ord,
+		cep->ird, cep->sdev->attrs.max_ird);
 	if (cep->ird > cep->sdev->attrs.max_ird
 			|| cep->ord > cep->sdev->attrs.max_ord) {
 		cep->ird = htons(min(cep->ird, cep->sdev->attrs.max_ird));
@@ -598,7 +596,8 @@ static int siw_proc_trpreply(struct siw_cep *cep)
 	rep = &cep->mpa.hdr;
 
 	if (ntohs(rep->hdr.opcode) != trp_accept) {
-		pr_debug(DBG_CM "(cep=0x%p): Got TRP reject\n", cep);
+		dev_dbg(&cep->sdev->ofa_dev.dev,
+			"(CEP 0x%p): Got TRP reject\n", cep);
 		(void)siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY,
 				    -ECONNRESET);
 
@@ -606,9 +605,10 @@ static int siw_proc_trpreply(struct siw_cep *cep)
 		goto out;
 	}
 
-	pr_debug(DBG_CM "(cep=0x%p): recved TRP Accept ORD: %d (our IRD: %d), IRD: %d (our ORD: %d)\n",
-			cep, htons(rep->params.ord), cep->ird,
-			htons(rep->params.ird), cep->ord);
+	dev_dbg(&cep->sdev->ofa_dev.dev,
+		"(CEP 0x%p): recved TRP Accept ORD: %d (our IRD: %d), IRD: %d (our ORD: %d)\n",
+		cep, htons(rep->params.ord), cep->ird,
+		htons(rep->params.ird), cep->ord);
 	if (htons(rep->params.ord) > cep->sdev->attrs.max_ird
 			|| htons(rep->params.ird) > cep->sdev->attrs.max_ord) {
 		rv = -ECONNRESET;
@@ -689,12 +689,14 @@ static void siw_accept_newconn(struct siw_cep *cep)
 
 	rv = sock_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP, &new_s);
 	if (rv) {
-		pr_err("sock_create failed: %d\n", rv);
+		dev_err(&cep->sdev->ofa_dev.dev,
+			"sock_create failed: %d\n", rv);
 		goto error;
 	}
 
-	pr_debug(DBG_CM "(cep=0x%p, s=0x%p, new_s=0x%p): "
-		"New LLP connection accepted\n", cep, s, new_s);
+	dev_dbg(&cep->sdev->ofa_dev.dev,
+		"(CEP 0x%p, s=0x%p, new_s=0x%p): New LLP connection accepted\n",
+		cep, s, new_s);
 
 	new_cep->state = SIW_EPSTATE_AWAIT_MPAREQ;
 
@@ -743,7 +745,8 @@ error:
 		siw_socket_disassoc(new_s);
 		sock_release(new_s);
 	}
-	pr_debug(DBG_CM "(cep=0x%p): ERROR: rv=%d\n", cep, rv);
+	dev_warn(&cep->sdev->ofa_dev.dev,
+		"(CEP 0x%p): could not process TRP Request: rv=%d\n", cep, rv);
 }
 
 
@@ -756,8 +759,8 @@ static void siw_cm_work_handler(struct work_struct *w)
 	work = container_of(w, struct siw_cm_work, work.work);
 	cep = work->cep;
 
-	pr_debug(DBG_CM " (QP%d): WORK type: %d, CEP: 0x%p, state: %d\n",
-		cep->qp ? QP_ID(cep->qp) : -1, work->type, cep, cep->state);
+	dev_dbg(&cep->sdev->ofa_dev.dev, "(CEP 0x%p): WORK type: %d, QP: %d, state: %d\n",
+		cep, work->type, cep->qp ? QP_ID(cep->qp) : -1, cep->state);
 
 	siw_cep_set_inuse(cep);
 
@@ -785,10 +788,11 @@ static void siw_cm_work_handler(struct work_struct *w)
 			/*
 			 * CEP already moved out of connect/accept handshake.
 			 * any connection management already done.
-			 * silently ignore the mpa packet.
+			 * silently ignore the TRP packet.
 			 */
-			pr_debug(DBG_CM "(): CEP not in "
-				"handshake state: %d\n", cep->state);
+			dev_dbg(&cep->sdev->ofa_dev.dev,
+				"(CEP 0x%p): CEP not in handshake state: %d\n",
+				cep, cep->state);
 
 		}
 		if (rv && rv != EAGAIN)
@@ -800,8 +804,9 @@ static void siw_cm_work_handler(struct work_struct *w)
 		/*
 		 * QP scheduled LLP close
 		 */
-		pr_debug(DBG_CM "(): SIW_CM_WORK_CLOSE_LLP, cep->state=%d\n",
-			cep->state);
+		dev_dbg(&cep->sdev->ofa_dev.dev,
+			"(CEP 0x%p): SIW_CM_WORK_CLOSE_LLP, cep->state=%d\n",
+			cep, cep->state);
 
 		if (cep->cm_id)
 			siw_cm_upcall(cep, IW_CM_EVENT_CLOSE, 0);
@@ -812,8 +817,9 @@ static void siw_cm_work_handler(struct work_struct *w)
 
 	case SIW_CM_WORK_PEER_CLOSE:
 
-		pr_debug(DBG_CM "(): SIW_CM_WORK_PEER_CLOSE, "
-			"cep->state=%d\n", cep->state);
+		dev_dbg(&cep->sdev->ofa_dev.dev,
+			"(CEP 0x%p): SIW_CM_WORK_PEER_CLOSE, cep->state=%d\n",
+			cep, cep->state);
 
 		if (cep->cm_id) {
 			switch (cep->state) {
@@ -852,16 +858,17 @@ static void siw_cm_work_handler(struct work_struct *w)
 				/*
 				 * Wait for the CM to call its accept/reject
 				 */
-				pr_debug(DBG_CM "(): STATE_RECVD_MPAREQ: "
-					"wait for CM:\n");
+				dev_dbg(&cep->sdev->ofa_dev.dev,
+					"(CEP 0x%p): STATE_RECVD_MPAREQ: wait for CM\n",
+					cep);
 				break;
 			case SIW_EPSTATE_AWAIT_MPAREQ:
 				/*
 				 * Socket close before TRP request received.
 				 */
-				pr_debug(DBG_CM
-					"(): STATE_AWAIT_MPAREQ: "
-					"unlink from Listener\n");
+				dev_dbg(&cep->sdev->ofa_dev.dev,
+					"(CEP 0x%p): STATE_AWAIT_MPAREQ: unlink from listener\n",
+					cep);
 				siw_cep_put(cep->listen_cep);
 				cep->listen_cep = NULL;
 
@@ -918,8 +925,9 @@ static void siw_cm_work_handler(struct work_struct *w)
 			break;
 
 		default:
-			pr_warn(DBG_CM " timeout in unexpected state %u\n",
-					cep->state);
+			dev_warn(&cep->sdev->ofa_dev.dev,
+				"timeout in unexpected state %u\n",
+				cep->state);
 			release_cep = 1;
 			break;
 		}
@@ -931,8 +939,8 @@ static void siw_cm_work_handler(struct work_struct *w)
 
 	if (release_cep) {
 
-		pr_debug(DBG_CM " (CEP 0x%p): Release: "
-			"timer=%s, sock=0x%p, QP%d, id=0x%p\n",
+		dev_dbg(&cep->sdev->ofa_dev.dev,
+			"(CEP 0x%p): Release: timer=%s, sock=0x%p, QP%d, id=0x%p\n",
 			cep, cep->timer ? "y" : "n", cep->llp.sock,
 			cep->qp ? QP_ID(cep->qp) : -1, cep->cm_id);
 
@@ -970,7 +978,8 @@ static void siw_cm_work_handler(struct work_struct *w)
 
 	siw_cep_set_free(cep);
 
-	pr_debug(DBG_CM " (Exit): WORK type: %d, CEP: 0x%p\n", work->type, cep);
+	dev_dbg(&cep->sdev->ofa_dev.dev, "(CEP 0x%p): Exit WORK type: %d\n",
+		cep, work->type);
 	siw_put_work(work);
 	siw_cep_put(cep);
 }
@@ -979,13 +988,16 @@ static struct workqueue_struct *siw_cm_wq;
 
 int siw_cm_queue_work(struct siw_cep *cep, enum siw_work_type type)
 {
-	struct siw_cm_work *work = siw_get_work(cep);
+	struct siw_cm_work *work;
 
-	pr_debug(DBG_CM " (QP%d): WORK type: %d, CEP: 0x%p\n",
-		cep->qp ? QP_ID(cep->qp) : -1, type, cep);
+	dev_dbg(&cep->sdev->ofa_dev.dev, "(CEP 0x%p): WORK type: %d, QP: %d\n",
+		cep, cep->qp ? QP_ID(cep->qp) : -1, type);
 
+	work = siw_get_work(cep);
 	if (!work) {
-		pr_debug(" Failed\n");
+		dev_err(&cep->sdev->ofa_dev.dev,
+			"(CEP 0x%p): No free work entries available\n",
+			cep);
 		return -ENOMEM;
 	}
 	work->type = type;
@@ -1025,7 +1037,8 @@ static void siw_cm_llp_data_ready(struct sock *sk)
 		goto out;
 	}
 
-	pr_debug(DBG_CM "(): cep 0x%p, state: %d\n", cep, cep->state);
+	dev_dbg(&cep->sdev->ofa_dev.dev, "(CEP 0x%p) data ready, state: %d\n",
+		cep, cep->state);
 
 	switch (cep->state) {
 
@@ -1044,7 +1057,9 @@ static void siw_cm_llp_data_ready(struct sock *sk)
 		break;
 
 	default:
-		pr_debug(DBG_CM "(): Unexpected DATA, state %d\n", cep->state);
+		dev_warn(&cep->sdev->ofa_dev.dev,
+			"(CEP 0x%p): Unexpected DATA, state %d\n",
+			cep, cep->state);
 		break;
 	}
 out:
@@ -1055,19 +1070,21 @@ static void siw_cm_llp_write_space(struct sock *sk)
 {
 	struct siw_cep	*cep = sk_to_cep(sk);
 
-	if (cep)
-		pr_debug(DBG_CM "(): cep: 0x%p, state: %d\n", cep, cep->state);
+	if (!WARN_ON_ONCE(!cep))
+		dev_dbg(&cep->sdev->ofa_dev.dev,
+			"(CEP 0x%p) write space available, state: %d\n",
+			cep, cep->state);
 }
 
 static void siw_cm_llp_error_report(struct sock *sk)
 {
 	struct siw_cep	*cep = sk_to_cep(sk);
 
-	pr_debug(DBG_CM "(): error: %d, state: %d\n", sk->sk_err, sk->sk_state);
-
-	if (cep) {
+	if (!WARN_ON_ONCE(!cep)) {
 		cep->sk_error = sk->sk_err;
-		pr_debug(DBG_CM "(): cep->state: %d\n", cep->state);
+		dev_dbg(&cep->sdev->ofa_dev.dev,
+			"(CEP 0x%p): error: %d, sk->sk_state: %d, cep->state: %d\n",
+			cep, sk->sk_err, sk->sk_state, cep->state);
 	}
 }
 
@@ -1113,17 +1130,15 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 		return -EINVAL;
 	}
 
-	pr_debug(DBG_CM "(id=0x%p, QP%d): dev(id)=%s, netdev=%s\n",
-		id, QP_ID(qp), sdev->ofa_dev.name, sdev->netdev->name);
-	pr_debug(DBG_CM "(id=0x%p, QP%d): laddr=(0x%x,%d), raddr=(0x%x,%d)\n",
-		id, QP_ID(qp),
-		ntohl(to_sockaddr_in(id->m_local_addr).sin_addr.s_addr),
-		ntohs(to_sockaddr_in(id->m_local_addr).sin_port),
-		ntohl(to_sockaddr_in(id->m_remote_addr).sin_addr.s_addr),
-		ntohs(to_sockaddr_in(id->m_remote_addr).sin_port));
-
 	laddr = (struct sockaddr *)&id->m_local_addr;
 	raddr = (struct sockaddr *)&id->m_remote_addr;
+	dev_dbg(&sdev->ofa_dev.dev,
+		"(id=0x%p, QP%d): dev(id)=%s, netdev=%s, laddr=%pI4:%d, raddr=%pI4:%d, pd_len=%d\n",
+		id, QP_ID(qp), sdev->ofa_dev.name, sdev->netdev->name,
+		&to_sockaddr_in(laddr).sin_addr.s_addr,
+		ntohs(to_sockaddr_in(laddr).sin_port),
+		&to_sockaddr_in(raddr).sin_addr.s_addr,
+		ntohs(to_sockaddr_in(raddr).sin_port), pd_len);
 
 	rv = sock_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP, &s);
 	if (rv)
@@ -1159,9 +1174,6 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	cep->ord = params->ord;
 	cep->state = SIW_EPSTATE_CONNECTING;
 
-	pr_debug(DBG_CM " (id=0x%p, QP%d): pd_len = %u\n",
-		id, QP_ID(qp), pd_len);
-
 	rv = kernel_localname(s, &cep->llp.laddr);
 	if (rv)
 		goto error;
@@ -1190,14 +1202,12 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	if (rv >= 0) {
 		rv = siw_cm_queue_work(cep, SIW_CM_WORK_TIMEOUT);
 		if (!rv) {
-			pr_debug(DBG_CM "(id=0x%p, cep=0x%p QP%d): Exit\n",
-				id, cep, QP_ID(qp));
 			siw_cep_set_free(cep);
 			return 0;
 		}
 	}
 error:
-	pr_debug(DBG_CM " Failed: %d\n", rv);
+	dev_dbg(&sdev->ofa_dev.dev, "Connect failed: %d\n", rv);
 
 	if (cep) {
 		siw_socket_disassoc(s);
@@ -1269,8 +1279,9 @@ int siw_qp_rtr(struct siw_cep *cep)
 
 	switch (cep->state) {
 	case SIW_EPSTATE_ACCEPTING:
-		pr_debug(DBG_CM "(id=0x%p, QP%d): Sending TRP Accept\n",
-				cep->cm_id, QP_ID(cep->qp));
+		dev_dbg(&cep->sdev->ofa_dev.dev,
+			"(CEP 0x%p): id=0x%p, QP%d: Sending TRP Accept\n",
+			cep, cep->cm_id, QP_ID(cep->qp));
 		cep->mpa.hdr.hdr.psn = htons(0);
 		cep->mpa.hdr.hdr.ack_psn = htons(0);
 		cep->mpa.hdr.hdr.opcode = htons(trp_accept);
@@ -1349,6 +1360,8 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	struct siw_qp		*qp;
 	struct siw_qp_attrs	qp_attrs;
 	struct socket		*s = cep->llp.sock;
+	struct sockaddr_storage	peeraddr;
+	int			peeraddr_size;
 	int rv;
 
 	siw_cep_set_inuse(cep);
@@ -1361,7 +1374,9 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	if (cep->state != SIW_EPSTATE_RECVD_MPAREQ) {
 		if (cep->state == SIW_EPSTATE_CLOSED) {
 
-			pr_debug(DBG_CM "(id=0x%p): Out of State\n", id);
+			dev_dbg(&sdev->ofa_dev.dev,
+				"(CEP 0x%p): id=0x%p: Out of State\n",
+				cep, id);
 
 			siw_cep_set_free(cep);
 			siw_cep_put(cep);
@@ -1384,13 +1399,13 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 		goto error;
 	}
 
-	pr_debug(DBG_CM "(id=0x%p, QP%d): dev(id)=%s\n",
-		id, QP_ID(qp), sdev->ofa_dev.name);
-
+	peeraddr_size = sizeof(peeraddr);
+	kernel_getpeername(s, (struct sockaddr *)&peeraddr, &peeraddr_size);
 	if (params->ord > cep->ord ||
 	    params->ird > cep->sdev->attrs.max_ird) {
-		pr_debug(DBG_CM "(id=0x%p, QP%d): ORD: %d (remote: %d), IRD: %d (max: %d)\n",
-			id, QP_ID(qp),
+		dev_dbg(&sdev->ofa_dev.dev,
+			"(CEP 0x%p) %pISpc: ORD: %d (remote: %d), IRD: %d (max: %d)\n",
+			cep, &peeraddr,
 			params->ord, cep->ord,
 			params->ird, cep->sdev->attrs.max_ird);
 		rv = -EINVAL;
@@ -1398,9 +1413,9 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 		goto error;
 	}
 	if (params->private_data_len > URDMA_PDATA_LEN_MAX) {
-		pr_debug(DBG_CM "(id=0x%p, QP%d): "
-			"Private data too long: %d (max: %d)\n",
-			id, QP_ID(qp),
+		dev_warn(&sdev->ofa_dev.dev,
+			"(CEP 0x%p) %pISpc: Received private data too long: %d (max: %d)\n",
+			cep, &peeraddr,
 			params->private_data_len, URDMA_PDATA_LEN_MAX);
 		rv =  -EINVAL;
 		up_write(&qp->state_lock);
@@ -1415,8 +1430,9 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	qp_attrs.llp_stream_handle = cep->llp.sock;
 	qp_attrs.state = SIW_QP_STATE_RTS;
 
-	pr_debug(DBG_CM "(id=0x%p, QP%d): Moving to RTS, ORD %u IRD %u\n",
-			id, QP_ID(qp), qp_attrs.orq_size, qp_attrs.irq_size);
+	dev_dbg(&sdev->ofa_dev.dev,
+		"(CEP 0x%p) id=0x%p, QP%d: Moving to RTS, ORD %u IRD %u\n",
+		cep, id, QP_ID(qp), qp_attrs.orq_size, qp_attrs.irq_size);
 
 	/* Associate QP with CEP */
 	siw_cep_get(cep);
@@ -1430,7 +1446,8 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	rv = s->ops->connect(s, (struct sockaddr *)&cep->llp.raddr,
 			     sizeof cep->llp.raddr, 0);
 	if (rv) {
-		pr_err("UDP socket connect failed: %d\n", rv);
+		dev_err(&sdev->ofa_dev.dev,
+			"UDP socket connect failed: %d\n", rv);
 		up_write(&qp->state_lock);
 		goto error;
 	}
@@ -1445,8 +1462,9 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	if (rv)
 		goto error;
 
-	pr_debug(DBG_CM "(id=0x%p, QP%d): %d bytes private_data\n",
-			id, QP_ID(qp), params->private_data_len);
+	dev_dbg(&sdev->ofa_dev.dev,
+		"(CEP 0x%p) id=0x%p, QP%d: %d bytes private_data\n",
+		cep, id, QP_ID(qp), params->private_data_len);
 
 	cep->mpa.send_pdata_size = params->private_data_len;
 	cep->mpa.send_pdata = kmalloc(params->private_data_len, GFP_KERNEL);
@@ -1462,7 +1480,6 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 		siw_cm_queue_work(cep, SIW_CM_WORK_TIMEOUT);
 	}
 	siw_cep_set_free(cep);
-	pr_debug(DBG_CM "(id=0x%p, QP%d): Exit\n", id, QP_ID(qp));
 
 	return 0;
 
@@ -1506,17 +1523,22 @@ int siw_reject(struct iw_cm_id *id, const void *pdata, u8 plen)
 	if (cep->state != SIW_EPSTATE_RECVD_MPAREQ) {
 		if (cep->state == SIW_EPSTATE_CLOSED) {
 
-			pr_debug(DBG_CM "(id=0x%p): Out of State\n", id);
+			dev_warn_once(&cep->sdev->ofa_dev.dev,
+				"(CEP 0x%p): Not sending reject in state CLOSED\n",
+				cep);
 
 			siw_cep_set_free(cep);
 			siw_cep_put(cep); /* should be last reference */
 
 			return -ECONNRESET;
 		}
-		WARN_ONCE(1, "bad CM state; expected SIW_EPSTATE_RECV_MPAREQ or SIW_EPSTATE_CLOSED\n");
+		dev_err_once(&cep->sdev->ofa_dev.dev,
+			"(CEP 0x%p): bad CM state for send TRP Reject; expected SIW_EPSTATE_RECV_MPAREQ or SIW_EPSTATE_CLOSED\n",
+			cep);
 	}
-	pr_debug(DBG_CM "(id=0x%p): cep->state=%d\n", id, cep->state);
-	pr_debug(DBG_CM " Reject: %d: %x\n", plen, plen ? *(char *)pdata : 0);
+	dev_dbg(&cep->sdev->ofa_dev.dev,
+		"(CEP 0x%p): cep->state=%d Reject: %d: %x\n",
+		cep, cep->state, plen, plen ? *(char *)pdata : 0);
 
 	cep->mpa.hdr.hdr.psn = htons(0);
 	cep->mpa.hdr.hdr.ack_psn = htons(0);
@@ -1550,8 +1572,8 @@ static int siw_listen_address(struct iw_cm_id *id, int backlog,
 	rv = sock_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP, &s);
 
 	if (rv < 0) {
-		pr_debug(DBG_CM "(id=0x%p): ERROR: "
-			"sock_create(): rv=%d\n", id, rv);
+		dev_err(&sdev->ofa_dev.dev,
+			"(id=0x%p): sock_create(): rv=%d\n", id, rv);
 		return rv;
 	}
 
@@ -1563,14 +1585,15 @@ static int siw_listen_address(struct iw_cm_id *id, int backlog,
 	rv = kernel_setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (char *)&s_val,
 			       sizeof s_val);
 	if (rv != 0) {
-		pr_debug(DBG_CM "(id=0x%p): ERROR: "
-			"kernel_setsockopt(): rv=%d\n", id, rv);
+		dev_err(&sdev->ofa_dev.dev,
+			"(id=0x%p): kernel_setsockopt(): rv=%d\n",
+			id, rv);
 		goto error;
 	}
 
 	rv = s->ops->bind(s, laddr, sizeof *laddr);
 	if (rv != 0) {
-		pr_debug(DBG_CM "(id=0x%p): ERROR: bind(): rv=%d\n",
+		dev_err(&sdev->ofa_dev.dev, "(id=0x%p): bind(): rv=%d\n",
 			id, rv);
 		goto error;
 	}
@@ -1584,9 +1607,9 @@ static int siw_listen_address(struct iw_cm_id *id, int backlog,
 
 	rv = siw_cm_alloc_work(cep, backlog);
 	if (rv != 0) {
-		pr_debug(DBG_CM "(id=0x%p): ERROR: "
-			"siw_cm_alloc_work(backlog=%d): rv=%d\n",
-			id, backlog, rv);
+		dev_err(&sdev->ofa_dev.dev,
+			"(CEP 0x%p): siw_cm_alloc_work(backlog=%d): rv=%d\n",
+			cep, backlog, rv);
 		goto error;
 	}
 
@@ -1626,10 +1649,9 @@ static int siw_listen_address(struct iw_cm_id *id, int backlog,
 		INIT_LIST_HEAD((struct list_head *)id->provider_data);
 	}
 
-	pr_debug(DBG_CM "(id=0x%p): dev(id)=%s, netdev=%s, "
-		"id->provider_data=0x%p, cep=0x%p\n",
-		id, id->device->name,
-		sdev->netdev->name,
+	dev_dbg(&sdev->ofa_dev.dev,
+		"(CEP 0x%p): netdev=%s, id->provider_data=0x%p, cep=0x%p\n",
+		cep, sdev->netdev->name,
 		id->provider_data, cep);
 
 	list_add_tail(&cep->listenq, (struct list_head *)id->provider_data);
@@ -1638,8 +1660,6 @@ static int siw_listen_address(struct iw_cm_id *id, int backlog,
 	return 0;
 
 error:
-	pr_debug(DBG_CM " Failed: %d\n", rv);
-
 	if (cep) {
 		siw_cep_set_inuse(cep);
 
@@ -1671,7 +1691,8 @@ static void siw_drop_listeners(struct iw_cm_id *id)
 		struct siw_cep *cep = list_entry(p, struct siw_cep, listenq);
 		list_del(p);
 
-		pr_debug(DBG_CM "(id=0x%p): drop CEP 0x%p, state %d\n",
+		dev_dbg(&cep->sdev->ofa_dev.dev,
+			"(id=0x%p): drop CEP 0x%p, state %d\n",
 			id, cep, cep->state);
 		siw_cep_set_inuse(cep);
 
@@ -1712,8 +1733,8 @@ int siw_create_listen(struct iw_cm_id *id, int backlog)
 	if (!sdev->netdev)
 		return -ENODEV;
 
-	pr_debug(DBG_CM "(id=0x%p): dev(id)=%s, netdev=%s backlog=%d\n",
-		id, ofa_dev->name, sdev->netdev->name, backlog);
+	dev_dbg(&ofa_dev->dev, "(id=0x%p): netdev=%s backlog=%d\n",
+		id, sdev->netdev->name, backlog);
 
 	/*
 	 * IPv4/v6 design differences regarding multi-homing
@@ -1724,24 +1745,24 @@ int siw_create_listen(struct iw_cm_id *id, int backlog)
 	if (to_sockaddr_in(id->m_local_addr).sin_family == AF_INET) {
 		/* IPv4 */
 		struct sockaddr_in	laddr = to_sockaddr_in(id->m_local_addr);
-		u8			*l_ip, *r_ip;
+		__be32			l_ip, r_ip;
 		struct in_device	*in_dev;
 
-		l_ip = (u8 *) &to_sockaddr_in(id->m_local_addr).sin_addr.s_addr;
-		r_ip = (u8 *) &to_sockaddr_in(id->m_remote_addr).sin_addr.s_addr;
-		pr_debug(DBG_CM "(id=0x%p): "
-			"laddr(id)  : ipv4=%d.%d.%d.%d, port=%d; "
-			"raddr(id)  : ipv4=%d.%d.%d.%d, port=%d\n",
-			id,
-			l_ip[0], l_ip[1], l_ip[2], l_ip[3],
+		l_ip = to_sockaddr_in(id->m_local_addr).sin_addr.s_addr;
+		r_ip = to_sockaddr_in(id->m_remote_addr).sin_addr.s_addr;
+		dev_dbg(&ofa_dev->dev,
+			"(id=0x%p): laddr(id)  : ipv4=%pI4, port=%d; raddr(id)  : ipv4=%pI4, port=%d\n",
+			id, &l_ip,
 			ntohs(to_sockaddr_in(id->m_local_addr).sin_port),
-			r_ip[0], r_ip[1], r_ip[2], r_ip[3],
+			&r_ip,
 			ntohs(to_sockaddr_in(id->m_remote_addr).sin_port));
 
 		in_dev = in_dev_get(sdev->netdev);
 		if (!in_dev) {
-			pr_debug(DBG_CM "(id=0x%p): "
-				"netdev has no in_device\n", id);
+			dev_err_once(&ofa_dev->dev,
+				"netdev %s has no in_device\n",
+				sdev->netdev ? sdev->netdev->name
+					: "<unassigned>");
 			return -ENODEV;
 		}
 
@@ -1757,12 +1778,10 @@ int siw_create_listen(struct iw_cm_id *id, int backlog)
 			    ifa->ifa_address) {
 				laddr.sin_addr.s_addr = ifa->ifa_address;
 
-				l_ip = (u8 *) &laddr.sin_addr.s_addr;
-				pr_debug(DBG_CM "(id=0x%p): "
-					"laddr(bind): ipv4=%d.%d.%d.%d,"
-					" port=%d\n", id,
-					l_ip[0], l_ip[1], l_ip[2],
-					l_ip[3], ntohs(laddr.sin_port));
+				dev_dbg(&ofa_dev->dev,
+					"(id=0x%p): laddr(bind): ipv4=%pI4, port=%d\n",
+					id, &laddr.sin_addr.s_addr,
+					ntohs(laddr.sin_port));
 
 				rv = siw_listen_address(id, backlog,
 						(struct sockaddr *)&laddr);
@@ -1779,10 +1798,8 @@ int siw_create_listen(struct iw_cm_id *id, int backlog)
 	} else {
 		/* IPv6 */
 		rv = -EAFNOSUPPORT;
-		pr_debug(DBG_CM "(id=0x%p): TODO: IPv6 support\n", id);
+		dev_notice_once(&ofa_dev->dev, "TODO: IPv6 support\n");
 	}
-	if (!rv)
-		pr_debug(DBG_CM "(id=0x%p): Success\n", id);
 
 	return rv;
 }
@@ -1792,16 +1809,16 @@ int siw_destroy_listen(struct iw_cm_id *id)
 {
 	struct siw_dev *sdev = siw_dev_ofa2siw(id->device);
 
-	pr_debug(DBG_CM "(id=0x%p): dev(id)=%s, netdev=%s\n",
-		id, id->device->name,
-		sdev->netdev ? sdev->netdev->name : "<unassigned>");
+	dev_dbg(&id->device->dev, "(id=0x%p): netdev=%s\n",
+		id, sdev->netdev ? sdev->netdev->name : "<unassigned>");
 
 	if (!id->provider_data) {
 		/*
 		 * TODO: See if there's a way to avoid getting any
 		 *       listener ids without a list of CEPs
 		 */
-		pr_debug(DBG_CM "(id=0x%p): Listener id: no CEP(s)\n", id);
+		dev_dbg(&id->device->dev,
+			"(id=0x%p): Listener id: no CEP(s)\n", id);
 		return 0;
 	}
 	siw_drop_listeners(id);

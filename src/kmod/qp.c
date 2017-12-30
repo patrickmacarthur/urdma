@@ -73,13 +73,10 @@ static char siw_qp_state_to_string[SIW_QP_STATE_COUNT][sizeof "TERMINATE"] = {
 
 void siw_qp_llp_close(struct siw_qp *qp)
 {
-	pr_debug(DBG_CM "(QP%d): Enter: SIW QP state = %s, cep=0x%p\n",
-		QP_ID(qp), siw_qp_state_to_string[qp->attrs.state],
-		qp->cep);
-
 	down_write(&qp->state_lock);
 
-	pr_debug(DBG_CM "(QP%d): state locked\n", QP_ID(qp));
+	dev_dbg(&qp->ofa_qp.device->dev,
+		"(QP%d): state locked\n", QP_ID(qp));
 
 	qp->attrs.llp_stream_handle = NULL;
 
@@ -105,8 +102,9 @@ void siw_qp_llp_close(struct siw_qp *qp)
 		break;
 
 	default:
-		pr_debug(DBG_CM " No state transition needed: %d\n",
-			qp->attrs.state);
+		dev_dbg(&qp->ofa_qp.device->dev,
+			"(QP%d): no state transition needed: %d\n",
+			QP_ID(qp), qp->attrs.state);
 		break;
 	}
 
@@ -119,9 +117,6 @@ void siw_qp_llp_close(struct siw_qp *qp)
 	}
 
 	up_write(&qp->state_lock);
-	pr_debug(DBG_CM "(QP%d): Exit: SIW QP state = %s, cep=0x%p\n",
-		QP_ID(qp), siw_qp_state_to_string[qp->attrs.state],
-		qp->cep);
 }
 
 
@@ -164,8 +159,6 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 	if (!mask)
 		return 0;
 
-	pr_debug(DBG_CM "(QP%d)\n", QP_ID(qp));
-
 	if (mask != SIW_QP_ATTR_STATE) {
 		/*
 		 * changes of qp attributes (maybe state, too)
@@ -195,7 +188,8 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 	if (!(mask & SIW_QP_ATTR_STATE))
 		return 0;
 
-	pr_debug(DBG_CM "(QP%d): SIW QP state: %s => %s\n", QP_ID(qp),
+	dev_dbg(&qp->ofa_qp.device->dev,
+		"(QP%d): SIW QP state: %s => %s\n", QP_ID(qp),
 		siw_qp_state_to_string[qp->attrs.state],
 		siw_qp_state_to_string[attrs->state]);
 
@@ -210,15 +204,16 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 		case SIW_QP_STATE_RTS:
 
 			if ((mask & init_to_rts_mask) != init_to_rts_mask) {
-				pr_debug("(QP%d): socket, ird, and/or ord missing\n",
-						QP_ID(qp));
+				dev_err(&qp->ofa_qp.device->dev,
+					"(QP%d): socket, ird, and/or ord missing\n",
+					QP_ID(qp));
 				rv = -EINVAL;
 				break;
 			}
-			pr_debug(DBG_CM "(QP%d): Enter RTS: "
-				"peer 0x%08x, local 0x%08x\n", QP_ID(qp),
-				qp->cep->llp.raddr.sin_addr.s_addr,
-				qp->cep->llp.laddr.sin_addr.s_addr);
+			dev_dbg(&qp->ofa_qp.device->dev,
+				"(QP%d): enter RTS: peer %pISpc, local %pISpc\n",
+				QP_ID(qp), &qp->cep->llp.raddr,
+				&qp->cep->llp.laddr);
 
 			qp->attrs.state = SIW_QP_STATE_RTS;
 
@@ -245,8 +240,9 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 			break;
 
 		default:
-			pr_debug(DBG_CM
-				" QP state transition undefined: %s => %s\n",
+			dev_warn_once(&qp->ofa_qp.device->dev,
+				"(QP%d): QP state transition undefined: %s => %s\n",
+				QP_ID(qp),
 				siw_qp_state_to_string[qp->attrs.state],
 				siw_qp_state_to_string[attrs->state]);
 			break;
@@ -265,8 +261,9 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 			break;
 
 		default:
-			pr_debug(
-				" QP state transition undefined: %s => %s\n",
+			dev_warn_once(&qp->ofa_qp.device->dev,
+				"(QP%d): QP state transition undefined: %s => %s\n",
+				QP_ID(qp),
 				siw_qp_state_to_string[qp->attrs.state],
 				siw_qp_state_to_string[attrs->state]);
 			break;
@@ -283,8 +280,9 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 			break;
 
 		default:
-			pr_debug(
-				" QP state transition undefined: %s => %s\n",
+			dev_warn_once(&qp->ofa_qp.device->dev,
+				"(QP%d): QP state transition undefined: %s => %s\n",
+				QP_ID(qp),
 				siw_qp_state_to_string[qp->attrs.state],
 				siw_qp_state_to_string[attrs->state]);
 		}
@@ -316,8 +314,9 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 			break;
 
 		default:
-			pr_debug(DBG_CM
-				" QP state transition undefined: %s => %s\n",
+			dev_warn_once(&qp->ofa_qp.device->dev,
+				"(QP%d): QP state transition undefined: %s => %s\n",
+				QP_ID(qp),
 				siw_qp_state_to_string[qp->attrs.state],
 				siw_qp_state_to_string[attrs->state]);
 			return -ECONNABORTED;
@@ -325,7 +324,9 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 		break;
 
 	default:
-		pr_debug(DBG_CM " NOP: State: %d\n", qp->attrs.state);
+		dev_dbg(&qp->ofa_qp.device->dev,
+			"(QP%d): NOP: State: %d\n",
+			QP_ID(qp), qp->attrs.state);
 		break;
 	}
 	if (drop_conn)
@@ -338,14 +339,11 @@ struct ib_qp *siw_get_ofaqp(struct ib_device *ofa_dev, int id)
 {
 	struct siw_qp *qp =  siw_qp_id2obj(siw_dev_ofa2siw(ofa_dev), id);
 
-	pr_debug(DBG_OBJ ": dev_name: %s, OFA QPID: %d, QP: %p\n",
-		ofa_dev->name, id, qp);
 	if (qp) {
 		/*
 		 * siw_qp_id2obj() increments object reference count
 		 */
 		siw_qp_put(qp);
-		pr_debug(DBG_OBJ " QPID: %d\n", QP_ID(qp));
 		return &qp->ofa_qp;
 	}
 	return (struct ib_qp *)NULL;

@@ -317,7 +317,8 @@ static ssize_t urdma_chardev_write(struct file *filp, const char __user *buf,
 			return -EINVAL;
 		}
 	default:
-		pr_debug(" got invalid event type %u\n", event.event_type);
+		dev_dbg(file->dev,
+			"got invalid event type %u\n", event.event_type);
 		rv = -EINVAL;
 		goto out;
 	}
@@ -338,15 +339,17 @@ static int urdma_chardev_release(struct inode *inodep, struct file *filp)
 	spin_lock_bh(&file->lock);
 	list_for_each_safe(pos, next, &file->rtr_wait_list) {
 		cep = list_entry(pos, struct siw_cep, rtr_wait_entry);
-		pr_debug("chardev release: remove rtr wait event for cep %p\n",
-				(void *)cep);
+		dev_dbg(file->dev,
+			"chardev release: remove rtr wait event for cep %p\n",
+			(void *)cep);
 		list_del(pos);
 		siw_cep_put(cep);
 	}
 	list_for_each_safe(pos, next, &file->established_list) {
 		cep = list_entry(pos, struct siw_cep, established_entry);
-		pr_debug("chardev release: remove established event for cep %p\n",
-				(void *)cep);
+		dev_dbg(file->dev,
+			"chardev release: remove established event for cep %p\n",
+			(void *)cep);
 		list_del(pos);
 		siw_cep_put(cep);
 	}
@@ -382,17 +385,17 @@ static int siw_device_register(struct siw_dev *sdev)
 	rv = ib_register_device(ofa_dev);
 #endif
 	if (rv) {
-		pr_debug(DBG_DM "(dev=%s): "
-		       "ib_register_device failed: rv=%d\n", ofa_dev->name, rv);
+		dev_dbg(&ofa_dev->dev,
+			"ib_register_device failed: rv=%d\n", rv);
 		return rv;
 	}
 
 	for (i = 0; i < ARRAY_SIZE(siw_dev_attributes); ++i) {
 		rv = device_create_file(&ofa_dev->dev, siw_dev_attributes[i]);
 		if (rv) {
-			pr_debug(DBG_DM "(dev=%s): "
+			dev_dbg(&ofa_dev->dev,
 				"device_create_file failed: i=%d, rv=%d\n",
-				ofa_dev->name, i, rv);
+				i, rv);
 			ib_unregister_device(ofa_dev);
 			return rv;
 		}
@@ -401,9 +404,8 @@ static int siw_device_register(struct siw_dev *sdev)
 
 	sdev->attrs.vendor_part_id = dev_id++;
 
-	pr_debug(DBG_DM ": Interface '%s' for device '%s' up, HWaddr=%pM\n",
-			sdev->netdev->name, sdev->ofa_dev.name,
-			sdev->netdev->dev_addr);
+	dev_dbg(&ofa_dev->dev, "Interface '%s' up, HWaddr=%pM\n",
+			sdev->netdev->name, sdev->netdev->dev_addr);
 
 	sdev->is_registered = 1;
 	return 0;
@@ -416,7 +418,7 @@ static void siw_device_deregister(struct siw_dev *sdev)
 	siw_debugfs_del_device(sdev);
 
 	if (sdev->is_registered) {
-		pr_debug(DBG_DM ": deregister %s netdev=%s\n", sdev->ofa_dev.name,
+		dev_dbg(&sdev->ofa_dev.dev, "deregister netdev=%s\n",
 			sdev->netdev ? sdev->netdev->name : "(unattached)");
 
 		for (i = 0; i < ARRAY_SIZE(siw_dev_attributes); ++i)
@@ -439,8 +441,7 @@ static void siw_device_destroy(struct siw_dev *sdev)
 	if (WARN_ONCE(!sdev, "call siw_device_destroy() with sdev==NULL"))
 		return;
 
-	pr_debug(DBG_DM ": destroy siw device %s netdev=%s\n",
-			sdev->ofa_dev.name,
+	dev_dbg(&sdev->ofa_dev.dev, "destroy siw device netdev=%s\n",
 			sdev->netdev ? sdev->netdev->name : "(unattached)");
 
 	put_device(ib_dma_device(sdev->ofa_dev));
@@ -479,8 +480,8 @@ static void siw_device_assign_guid(struct siw_dev *sdev,
 
 	/* HACK HACK HACK: change the node GUID to the hardware address
 	 * now that we know what it is */
-	pr_debug(DBG_DM ": set node guid for %s based on HWaddr=%pM\n",
-			ofa_dev->name, netdev->dev_addr);
+	dev_dbg(&ofa_dev->dev, "set node guid based on HWaddr=%pM\n",
+			netdev->dev_addr);
 	memset(&ofa_dev->node_guid, 0, sizeof(ofa_dev->node_guid));
 	memcpy(&ofa_dev->node_guid, netdev->dev_addr, 6);
 }
@@ -666,7 +667,7 @@ static int siw_netdev_event(struct notifier_block *nb, unsigned long event,
 	struct in_device	*in_dev;
 	struct siw_dev		*sdev;
 
-	pr_debug(DBG_DM " (dev=%s): Event %lu\n", netdev->name, event);
+	dev_dbg(&netdev->dev, "event %lu\n", event);
 
 	if (dev_net(netdev) != &init_net)
 		goto done;
@@ -692,7 +693,7 @@ static int siw_netdev_event(struct notifier_block *nb, unsigned long event,
 
 		in_dev = in_dev_get(netdev);
 		if (!in_dev) {
-			pr_debug(DBG_DM ": %s: no in_dev\n", netdev->name);
+			dev_dbg(&netdev->dev, "no in_dev\n");
 			sdev->state = IB_PORT_INIT;
 			break;
 		}
@@ -702,7 +703,7 @@ static int siw_netdev_event(struct notifier_block *nb, unsigned long event,
 			siw_device_assign_guid(sdev, netdev);
 			siw_device_register(sdev);
 		} else {
-			pr_debug(DBG_DM ": %s: no ifa\n", netdev->name);
+			dev_dbg(&netdev->dev, "no ifa\n");
 			sdev->state = IB_PORT_INIT;
 		}
 		in_dev_put(in_dev);
@@ -727,8 +728,9 @@ static int siw_netdev_event(struct notifier_block *nb, unsigned long event,
 			sdev = siw_device_create(netdev);
 			if (sdev) {
 				sdev->state = IB_PORT_INIT;
-				pr_debug(DBG_DM ": create siw device %s for netdev %s\n",
-					sdev->ofa_dev.name, netdev->name);
+				dev_dbg(&sdev->ofa_dev.dev,
+					"create siw device for netdev %s\n",
+					netdev->name);
 			}
 		}
 		break;
@@ -757,9 +759,9 @@ static int siw_netdev_event(struct notifier_block *nb, unsigned long event,
 	 * Todo: Other netdev events are currently not handled.
 	 */
 	default:
-		pr_debug(DBG_DM " sdev=%s got unhandled netdev event %lu for netdev=%s\n",
-				sdev ? sdev->ofa_dev.name : "<NONE>",
-				event, netdev->name);
+		dev_dbg(&netdev->dev,
+			"sdev=%s got unhandled netdev event %lu\n",
+			sdev ? sdev->ofa_dev.name : "<NONE>", event);
 		break;
 	}
 unlock:
