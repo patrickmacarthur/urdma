@@ -619,7 +619,10 @@ convert_cqes(struct usiw_wc *cqe, int num_entries, struct ibv_wc *wc)
 		wc[x].opcode = cqe[x].opcode;
 		wc[x].byte_len = cqe[x].byte_len;
 		wc[x].qp_num = cqe[x].qp_num;
+		wc[x].imm_data = cqe[x].imm_data;
 		wc[x].wc_flags = 0;
+		if (wc[x].opcode == IBV_WC_RECV_RDMA_WITH_IMM)
+			wc[x].wc_flags |= IBV_WC_WITH_IMM;
 	}
 } /* convert_cqes */
 
@@ -1164,6 +1167,17 @@ usiw_post_send(struct ibv_qp *ib_qp, struct ibv_send_wr *wr,
 			wqe->opcode = usiw_wr_write;
 			wqe->remote_addr = wr->wr.rdma.remote_addr;
 			wqe->rkey = wr->wr.rdma.rkey;
+			if ((wr->send_flags & IBV_SEND_INLINE)
+					&& (ret = do_inline(qp, wqe, wr))!=0) {
+				goto errout;
+			}
+			break;
+		case IBV_WR_RDMA_WRITE_WITH_IMM:
+			wqe->opcode = usiw_wr_write_imm;
+			wqe->remote_addr = wr->wr.rdma.remote_addr;
+			wqe->rkey = wr->wr.rdma.rkey;
+			wqe->imm_data = wr->imm_data;
+			wqe->flags |= usiw_send_imm;
 			if ((wr->send_flags & IBV_SEND_INLINE)
 					&& (ret = do_inline(qp, wqe, wr))!=0) {
 				goto errout;

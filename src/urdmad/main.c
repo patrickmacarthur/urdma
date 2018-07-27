@@ -312,6 +312,7 @@ do_setup_qp(struct urdma_qp_connected_event *event, struct usiw_port *dev,
 	} else {
 		qp->rx_desc_count = rxq_info.nb_desc;
 	}
+
 	ret = rte_eth_tx_queue_info_get(event->urdmad_dev_id,
 			event->urdmad_qp_id, &txq_info);
 	if (ret < 0) {

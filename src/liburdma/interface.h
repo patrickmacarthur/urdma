@@ -118,6 +118,7 @@ struct usiw_wc {
 	enum ibv_wc_opcode opcode;
 	uint32_t byte_len;
 	uint32_t qp_num;
+	uint64_t imm_data;
 };
 
 struct usiw_recv_wqe {
@@ -126,9 +127,11 @@ struct usiw_recv_wqe {
 	struct list_node active;
 	uint32_t msn;
 	bool complete;
+	bool has_imm;
 	size_t total_request_size;
 	size_t recv_size;
 	size_t input_size;
+	uint64_t imm_data;
 
 	size_t iov_count;
 	struct iovec iov[];
@@ -155,11 +158,13 @@ enum usiw_send_opcode {
 	usiw_wr_send = 0,
 	usiw_wr_write = 1,
 	usiw_wr_read = 2,
+	usiw_wr_write_imm = 3,
 };
 
 enum {
 	usiw_send_signaled = 1,
 	usiw_send_inline = 2,
+	usiw_send_imm = 4,
 };
 
 struct usiw_send_wqe {
@@ -177,6 +182,7 @@ struct usiw_send_wqe {
 	size_t total_length;
 	size_t bytes_sent;
 	size_t bytes_acked;
+	uint64_t imm_data;
 
 	size_t iov_count;
 	struct iovec iov[];

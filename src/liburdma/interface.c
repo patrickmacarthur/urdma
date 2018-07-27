@@ -73,6 +73,7 @@
 
 #define IP_HDR_PROTO_UDP 17
 #define RETRANSMIT_MAX 5
+#define IMM_DATA_SIZE 8
 
 struct packet_context {
 	struct ee_state *src_ep;
@@ -744,7 +745,14 @@ post_recv_cqe(struct usiw_qp *qp, struct usiw_recv_wqe *wqe,
 	}
 	cqe->wr_context = wqe->wr_context;
 	cqe->status = status;
-	cqe->opcode = IBV_WC_RECV;
+	if (!wqe->has_imm) {
+		cqe->opcode = IBV_WC_RECV;
+	} else {
+		cqe->opcode = IBV_WC_RECV_RDMA_WITH_IMM;
+		cqe->imm_data = wqe->imm_data;
+		RTE_LOG(INFO, USER1, "Post completion with imm_data: %" PRIx32 "\n",
+			rte_be_to_cpu_32(cqe->imm_data));
+	}
 	cqe->byte_len = wqe->input_size;
 	cqe->qp_num = qp->ib_qp.qp_num;
 
@@ -761,6 +769,7 @@ get_ibv_send_wc_opcode(enum usiw_send_opcode ours)
 	case usiw_wr_send:
 		return IBV_WC_SEND;
 	case usiw_wr_write:
+	case usiw_wr_write_imm:
 		return IBV_WC_RDMA_WRITE;
 	case usiw_wr_read:
 		return IBV_WC_RDMA_READ;
@@ -917,9 +926,11 @@ static void
 do_rdmap_write(struct usiw_qp *qp, struct usiw_send_wqe *wqe)
 {
 	struct rdmap_tagged_packet *new_rdmap;
+	struct rdmap_untagged_packet *imm_rdmap;
 	struct rte_mbuf *sendmsg;
 	size_t payload_length;
 	uint16_t mtu = qp->shm_qp->mtu;
+	uint64_t *imm_data_payload;
 	void *payload;
 
 	while (wqe->bytes_sent < wqe->total_length
@@ -958,7 +969,38 @@ do_rdmap_write(struct usiw_qp *qp, struct usiw_send_wqe *wqe)
 		wqe->bytes_sent += payload_length;
 	}
 
-	if (wqe->bytes_sent == wqe->total_length) {
+	if ((wqe->flags & usiw_send_imm)
+			&& wqe->bytes_sent == wqe->total_length
+			&& serial_less_32(wqe->remote_ep->send_next_psn,
+					wqe->remote_ep->send_max_psn)) {
+		sendmsg = rte_pktmbuf_alloc(qp->dev->tx_ddp_mempool);
+
+		payload_length = IMM_DATA_SIZE;
+		imm_rdmap = (struct rdmap_untagged_packet *)rte_pktmbuf_prepend(
+					sendmsg, sizeof(*imm_rdmap));
+		imm_rdmap->head.ddp_flags = DDP_V1_UNTAGGED_LAST_DF;
+		imm_rdmap->head.rdmap_info
+			= RDMAP_V1 | rdmap_opcode_immediate_data;
+		imm_rdmap->head.sink_stag = rte_cpu_to_be_32(0);
+		imm_rdmap->qn = rte_cpu_to_be_32(0);
+		imm_rdmap->msn = rte_cpu_to_be_32(
+				wqe->remote_ep->next_send_msn);
+		wqe->remote_ep->next_send_msn++;
+		imm_rdmap->mo = rte_cpu_to_be_32(0);
+		imm_data_payload = (uint64_t *)rte_pktmbuf_append(sendmsg, payload_length);
+		*imm_data_payload = wqe->imm_data;
+
+		send_ddp_segment(qp, sendmsg, NULL, wqe, payload_length);
+		RTE_LOG(INFO, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> IMMEDIATE DATA %" PRIx32 " msn=%" PRIu32 "\n",
+				qp->shm_qp->dev_id, qp->shm_qp->qp_id,
+				rte_be_to_cpu_32(*imm_data_payload),
+				rte_be_to_cpu_32(imm_rdmap->msn));
+		wqe->flags &= ~usiw_send_imm;
+		wqe->bytes_sent += payload_length;
+	}
+
+	if (wqe->bytes_sent >= wqe->total_length
+				&& !(wqe->flags & usiw_send_imm)) {
 		wqe->state = SEND_WQE_WAIT;
 	}
 } /* do_rdmap_write */
@@ -1157,7 +1199,7 @@ process_send(struct usiw_qp *qp, struct packet_context *orig)
 			 * message --- should never happen since TRP will not
 			 * give us a duplicate packet. */
 			expected_msn = list_top(&qp->rq0.active_head, struct usiw_recv_wqe, active)->msn;
-			RTE_LOG(INFO, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> Received msn=%" PRIu32 " but expected msn=%" PRIu32 "\n",
+			RTE_LOG(INFO, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> (process_send) Received msn=%" PRIu32 " but expected msn=%" PRIu32 "\n",
 					qp->shm_qp->dev_id, qp->shm_qp->qp_id,
 					msn, expected_msn);
 			do_rdmap_terminate(qp, orig,
@@ -1196,10 +1238,88 @@ process_send(struct usiw_qp *qp, struct packet_context *orig)
 	memcpy_to_iov(wqe->iov, wqe->iov_count, PAYLOAD_OF(rdmap),
 			payload_length, offset);
 	wqe->recv_size += payload_length;
+	wqe->has_imm = false;
 	assert(wqe->input_size == 0 || wqe->recv_size <= wqe->input_size);
 	if (wqe->recv_size == wqe->input_size) {
 		wqe->complete = true;
 	}
+
+	/* Post completion, but only if there are no holes in the LLP packet
+	 * sequence. This ensures that even in the case of missing packets,
+	 * we maintain the ordering between received Tagged and Untagged
+	 * frames. Walk the queue starting at the head to make sure we post
+	 * completions that we had previously deferred. */
+	if (serial_less_32(orig->psn, wqe->remote_ep->recv_ack_psn)) {
+		wqe = list_top(&qp->rq0.active_head, struct usiw_recv_wqe, active);
+		while (wqe && wqe->complete) {
+			rte_spinlock_lock(&qp->rq0.lock);
+			post_recv_cqe(qp, wqe, IBV_WC_SUCCESS);
+			rte_spinlock_unlock(&qp->rq0.lock);
+			wqe = list_top(&qp->rq0.active_head, struct usiw_recv_wqe, active);
+		}
+	}
+}	/* process_send */
+
+
+static void
+process_immediate(struct usiw_qp *qp, struct packet_context *orig)
+{
+	struct usiw_recv_wqe *wqe;
+	struct rdmap_untagged_packet *rdmap
+		= (struct rdmap_untagged_packet *)orig->rdmap;
+	uint64_t imm_data;
+	uint32_t msn, expected_msn;
+	size_t offset;
+	size_t payload_length;
+	int ret;
+
+	if (!list_top(&qp->rq0.active_head, struct usiw_recv_wqe, active))
+		dequeue_recv_wqes(qp);
+
+	msn = rte_be_to_cpu_32(rdmap->msn);
+	ret = usiw_recv_wqe_queue_lookup(&qp->rq0, msn, &wqe);
+	assert(ret != -EINVAL);
+	if (ret < 0) {
+		if (list_top(&qp->rq0.active_head, struct usiw_recv_wqe, active)) {
+			/* This is a duplicate of a previously received
+			 * message --- should never happen since TRP will not
+			 * give us a duplicate packet. */
+			expected_msn = list_top(&qp->rq0.active_head, struct usiw_recv_wqe, active)->msn;
+			RTE_LOG(INFO, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> (process_immediate) Received msn=%" PRIu32 " but expected msn=%" PRIu32 "\n",
+					qp->shm_qp->dev_id, qp->shm_qp->qp_id,
+					msn, expected_msn);
+			do_rdmap_terminate(qp, orig,
+					ddp_error_untagged_invalid_msn);
+		} else {
+			RTE_LOG(INFO, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> Received SEND msn=%" PRIu32 " to empty receive queue\n",
+					qp->dev->portid,
+					qp->shm_qp->rx_queue, msn);
+			assert(rte_ring_empty(qp->rq0.ring));
+			do_rdmap_terminate(qp, orig,
+					ddp_error_untagged_no_buffer);
+		}
+		return;
+	}
+
+	offset = rte_be_to_cpu_32(rdmap->mo);
+	payload_length = orig->ddp_seg_length - sizeof(struct rdmap_untagged_packet);
+	if (payload_length != 8) {
+		RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> DROP: IMMEDIATE DATA payload_length=%zu != 8\n",
+				qp->shm_qp->dev_id, qp->shm_qp->qp_id,
+				payload_length);
+		do_rdmap_terminate(qp, orig,
+				ddp_error_untagged_message_too_long);
+		return;
+	}
+
+	wqe->imm_data = *(uint64_t *)PAYLOAD_OF(rdmap);
+	wqe->input_size = 0;
+	wqe->recv_size = 0;
+	wqe->has_imm = true;
+	wqe->complete = true;
+	RTE_LOG(INFO, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> receive IMMEDIATE DATA %" PRIx32 "\n",
+			qp->shm_qp->dev_id, qp->shm_qp->qp_id,
+			rte_be_to_cpu_32(wqe->imm_data));
 
 	/* Post completion, but only if there are no holes in the LLP packet
 	 * sequence. This ensures that even in the case of missing packets,
@@ -1932,6 +2052,10 @@ process_data_packet(struct usiw_qp *qp, struct rte_mbuf *mbuf)
 			case rdmap_opcode_terminate:
 				process_terminate(qp, &ctx);
 				break;
+			case rdmap_opcode_immediate_data:
+			case rdmap_opcode_immediate_data_se:
+				process_immediate(qp, &ctx);
+				break;
 			default:
 				do_rdmap_terminate(qp, &ctx,
 						rdmap_error_opcode_unexpected);
@@ -1954,6 +2078,7 @@ progress_send_wqe(struct usiw_qp *qp, struct usiw_send_wqe *wqe)
 		do_rdmap_send((struct usiw_qp *)qp, wqe);
 		break;
 	case usiw_wr_write:
+	case usiw_wr_write_imm:
 		do_rdmap_write((struct usiw_qp *)qp, wqe);
 		break;
 	case usiw_wr_read:

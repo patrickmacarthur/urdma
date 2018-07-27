@@ -124,6 +124,10 @@ enum rdmap_packet_type {
 	rdmap_opcode_send_se = 5,
 	rdmap_opcode_send_se_inv = 6,
 	rdmap_opcode_terminate = 7,
+	rdmap_opcode_immediate_data = 8,
+	rdmap_opcode_immediate_data_se = 9,
+	rdmap_opcode_atomic_request = 10,
+	rdmap_opcode_atomic_response = 11,
 };
 
 enum /*rdmap_hdrct*/ {
