@@ -65,6 +65,7 @@ cd ${TOP_SRCDIR}
 ssh ${SERVER_NODE} mkdir -p ${DEPLOY_DIR}
 ssh ${CLIENT_NODE} mkdir -p ${DEPLOY_DIR}
 rm -f urdma-*.tar.gz
+autoreconf -fi
 make distcheck || exit 1
 tarname=urdma-*.tar.gz
 tarbn=$(basename ${tarname} .tar.gz)
