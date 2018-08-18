@@ -65,11 +65,12 @@ sudo setcap cap_sys_admin,cap_net_admin+ep /usr/local/bin/urdmad
 systemctl --user daemon-reload
 
 systemctl --user stop urdmad || true
+sleep 5
 sudo modprobe -r urdma || true
 sudo modprobe rte_kni
 sudo modprobe urdma
 
 systemctl --user start urdmad
 sleep 5
-${TESTAPP} "$@"
+timeout 60 ${TESTAPP} "$@"
 systemctl --user stop urdmad
