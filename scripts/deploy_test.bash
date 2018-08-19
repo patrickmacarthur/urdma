@@ -84,7 +84,7 @@ tmux neww -n dpdk-client \
 	ssh -t ${CLIENT_NODE} ${DEPLOY_DIR}/${tarbn}/scripts/run_real.sh \
 	${DEPLOY_DIR}/${tarbn} ${CLIENT_APP} ${LOGID} \
 	${CLIENT_EXTRA_ARGS} \
-	-a ${SERVER_DPDK_IP}
+	${SERVER_DPDK_IP}
 	ret=\$?"
 
 exec 3<${our_tmpdir}/server_fifo
