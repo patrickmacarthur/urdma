@@ -269,7 +269,16 @@ struct read_response_state {
 	uint64_t sink_offset; /* host byte order */
 	bool active;
 	struct ee_state *sink_ep;
+};
+
+struct recved_segment_info {
+	struct psn_range range;
 	struct list_node qp_entry;
+	void *context;
+	uint32_t opcode;
+	bool last;
+	bool completed;
+	uint32_t length;
 };
 
 enum {
@@ -308,6 +317,8 @@ struct usiw_qp {
 	struct read_response_state *readresp_store;
 	uint32_t readresp_head_msn;
 	uint8_t ord_active;
+
+	struct list_head seginfo_head;
 
 	struct usiw_cq *recv_cq;
 	struct usiw_mr_table *pd;

@@ -78,6 +78,8 @@
 struct packet_context {
 	struct ee_state *src_ep;
 	size_t ddp_seg_length;
+	size_t rdma_length;
+	void *rdma_context;
 	struct rdmap_packet *rdmap;
 	uint32_t psn;
 };
@@ -1177,7 +1179,7 @@ dequeue_recv_wqes(struct usiw_qp *qp)
 
 
 static void
-process_send(struct usiw_qp *qp, struct packet_context *orig)
+place_send(struct usiw_qp *qp, struct packet_context *orig)
 {
 	struct usiw_recv_wqe *wqe;
 	struct rdmap_untagged_packet *rdmap
@@ -1244,25 +1246,26 @@ process_send(struct usiw_qp *qp, struct packet_context *orig)
 		wqe->complete = true;
 	}
 
-	/* Post completion, but only if there are no holes in the LLP packet
-	 * sequence. This ensures that even in the case of missing packets,
-	 * we maintain the ordering between received Tagged and Untagged
-	 * frames. Walk the queue starting at the head to make sure we post
-	 * completions that we had previously deferred. */
-	if (serial_less_32(orig->psn, wqe->remote_ep->recv_ack_psn)) {
-		wqe = list_top(&qp->rq0.active_head, struct usiw_recv_wqe, active);
-		while (wqe && wqe->complete) {
-			rte_spinlock_lock(&qp->rq0.lock);
-			post_recv_cqe(qp, wqe, IBV_WC_SUCCESS);
-			rte_spinlock_unlock(&qp->rq0.lock);
-			wqe = list_top(&qp->rq0.active_head, struct usiw_recv_wqe, active);
-		}
-	}
+	orig->rdma_length = payload_length;
+	orig->rdma_context = wqe;
 }	/* process_send */
 
 
+static bool
+deliver_send(struct usiw_qp *qp, struct usiw_recv_wqe *wqe)
+{
+	if (!wqe->complete)
+		return false;
+
+	rte_spinlock_lock(&qp->rq0.lock);
+	post_recv_cqe(qp, wqe, IBV_WC_SUCCESS);
+	rte_spinlock_unlock(&qp->rq0.lock);
+	return true;
+}
+
+
 static void
-process_immediate(struct usiw_qp *qp, struct packet_context *orig)
+place_immediate(struct usiw_qp *qp, struct packet_context *orig)
 {
 	struct usiw_recv_wqe *wqe;
 	struct rdmap_untagged_packet *rdmap
@@ -1321,21 +1324,21 @@ process_immediate(struct usiw_qp *qp, struct packet_context *orig)
 			qp->shm_qp->dev_id, qp->shm_qp->qp_id,
 			rte_be_to_cpu_32(wqe->imm_data));
 
-	/* Post completion, but only if there are no holes in the LLP packet
-	 * sequence. This ensures that even in the case of missing packets,
-	 * we maintain the ordering between received Tagged and Untagged
-	 * frames. Walk the queue starting at the head to make sure we post
-	 * completions that we had previously deferred. */
-	if (serial_less_32(orig->psn, wqe->remote_ep->recv_ack_psn)) {
-		wqe = list_top(&qp->rq0.active_head, struct usiw_recv_wqe, active);
-		while (wqe && wqe->complete) {
-			rte_spinlock_lock(&qp->rq0.lock);
-			post_recv_cqe(qp, wqe, IBV_WC_SUCCESS);
-			rte_spinlock_unlock(&qp->rq0.lock);
-			wqe = list_top(&qp->rq0.active_head, struct usiw_recv_wqe, active);
-		}
-	}
-}	/* process_send */
+	orig->rdma_length = payload_length;
+	orig->rdma_context = wqe;
+}	/* place_immediate */
+
+
+static bool
+deliver_immediate(struct usiw_qp *qp, struct usiw_recv_wqe *wqe)
+{
+	if (!wqe->complete)
+		return false;
+	rte_spinlock_lock(&qp->rq0.lock);
+	post_recv_cqe(qp, wqe, IBV_WC_SUCCESS);
+	rte_spinlock_unlock(&qp->rq0.lock);
+	return true;
+}	/* deliver_immediate */
 
 
 static int
@@ -1395,7 +1398,7 @@ respond_rdma_read(struct usiw_qp *qp)
 
 
 static void
-process_rdma_read_request(struct usiw_qp *qp, struct packet_context *orig)
+place_rdma_read_request(struct usiw_qp *qp, struct packet_context *orig)
 {
 	struct rdmap_readreq_packet *rdmap
 		= (struct rdmap_readreq_packet *)orig->rdmap;
@@ -1459,6 +1462,9 @@ process_rdma_read_request(struct usiw_qp *qp, struct packet_context *orig)
 	readresp->sink_stag = rdmap->untagged.head.sink_stag;
 	readresp->sink_offset = rte_be_to_cpu_64(rdmap->sink_offset);
 	readresp->sink_ep = orig->src_ep;
+
+	orig->rdma_length = 0;
+	orig->rdma_context = readresp;
 }	/* process_rdma_read_request */
 
 
@@ -1499,7 +1505,7 @@ find_first_rdma_read(struct usiw_qp *qp)
 
 
 static void
-process_rdma_read_response(struct usiw_qp *qp, struct packet_context *orig)
+place_rdma_read_response(struct usiw_qp *qp, struct packet_context *orig)
 {
 	struct rdmap_tagged_packet *rdmap;
 	struct usiw_send_wqe *read_wqe;
@@ -1526,7 +1532,75 @@ process_rdma_read_response(struct usiw_qp *qp, struct packet_context *orig)
 	if (DDP_GET_L(rdmap->head.ddp_flags)) {
 		binheap_insert(qp->remote_ep.recv_rresp_last_psn, orig->psn);
 	}
-}	/* process_rdma_read_response */
+
+	orig->rdma_length = orig->ddp_seg_length - sizeof(*rdmap);
+	orig->rdma_context = read_wqe;
+}	/* place_rdma_read_response */
+
+static bool
+deliver_rdma_read_response(struct usiw_qp *qp, struct usiw_send_wqe *send_wqe)
+{
+	send_wqe->state = SEND_WQE_COMPLETE;
+	try_complete_wqe(qp, send_wqe);
+	return true;
+}	/* deliver_rdma_read_response */
+
+
+static struct recved_segment_info *
+get_seginfo(struct usiw_qp *qp, uint32_t psn)
+{
+	struct recved_segment_info *info, *next;
+
+	list_for_each_safe(&qp->seginfo_head, info, next, qp_entry)
+		if (info->range.min <= psn && psn <= info->range.max)
+			return info;
+	return NULL;
+}	/* get_prev_segment */
+
+
+/** Add this received RDMA segment to the seginfo list in the appropriate
+ * location. */
+static int
+update_seginfo(struct usiw_qp *qp, struct packet_context *orig)
+{
+	struct rdmap_tagged_packet *rdmap;
+	struct recved_segment_info *info, *next;
+	uint32_t rdma_length;
+	int ret;
+
+	rdmap = (struct rdmap_tagged_packet *)orig->rdmap;
+	rdma_length = orig->rdma_length;
+
+	list_for_each_safe(&qp->seginfo_head, info, next, qp_entry) {
+		assert(orig->psn != info->range.min
+				&& orig->psn != info->range.max);
+		if (orig->psn == info->range.min - 1
+				&& !DDP_GET_L(rdmap->head.ddp_flags)) {
+			assert(info->context == orig->rdma_context);
+			info->range.min--;
+			info->length += rdma_length;
+			return 0;
+		} else if (orig->psn == info->range.max + 1 && !info->last) {
+			assert(info->context == orig->rdma_context);
+			info->range.max++;
+			info->length += rdma_length;
+			return 0;
+		} else if (orig->psn > info->range.min) {
+			break;
+		}
+	}
+
+	next = malloc(sizeof(*next));
+	if (!next)
+		return -errno;
+	next->opcode = RDMAP_GET_OPCODE(rdmap->head.rdmap_info);
+	next->range.min = next->range.max = orig->psn;
+	next->context = orig->rdma_context;
+	next->length = rdma_length;
+	next->last = DDP_GET_L(rdmap->head.ddp_flags);
+	next->completed = false;
+	list_add_after(&qp->seginfo_head, &info->qp_entry, &next->qp_entry);
+}	/* update_seginfo */
 
 
 static void
@@ -1825,7 +1899,7 @@ ddp_place_tagged_data(struct usiw_qp *qp, struct packet_context *orig)
 	case rdmap_opcode_rdma_write:
 		break;
 	case rdmap_opcode_rdma_read_response:
-		process_rdma_read_response(qp, orig);
+		place_rdma_read_response(qp, orig);
 		break;
 	default:
 		RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> received DDP tagged message with invalid opcode %" PRIx8 "\n",
@@ -2037,24 +2111,24 @@ process_data_packet(struct usiw_qp *qp, struct rte_mbuf *mbuf)
 	}
 
 	if (DDP_GET_T(ctx.rdmap->ddp_flags)) {
-		return ddp_place_tagged_data(qp, &ctx);
+		ddp_place_tagged_data(qp, &ctx);
 	} else {
 		switch (RDMAP_GET_OPCODE(ctx.rdmap->rdmap_info)) {
 			case rdmap_opcode_send:
 			case rdmap_opcode_send_inv:
 			case rdmap_opcode_send_se:
 			case rdmap_opcode_send_se_inv:
-				process_send(qp, &ctx);
+				place_send(qp, &ctx);
 				break;
 			case rdmap_opcode_rdma_read_request:
-				process_rdma_read_request(qp, &ctx);
+				place_rdma_read_request(qp, &ctx);
 				break;
 			case rdmap_opcode_terminate:
 				process_terminate(qp, &ctx);
 				break;
 			case rdmap_opcode_immediate_data:
 			case rdmap_opcode_immediate_data_se:
-				process_immediate(qp, &ctx);
+				place_immediate(qp, &ctx);
 				break;
 			default:
 				do_rdmap_terminate(qp, &ctx,
@@ -2062,6 +2136,7 @@ process_data_packet(struct usiw_qp *qp, struct rte_mbuf *mbuf)
 				return;
 		}
 	}
+	update_seginfo(qp, &ctx);
 }	/* process_ipv4_packet */
 
 
@@ -2129,6 +2204,52 @@ process_receive_queue(struct usiw_qp *qp, void *prefetch_addr, uint64_t *now)
 }
 
 
+static void
+deliver_rdma_msgs(struct usiw_qp *qp)
+{
+	struct recved_segment_info *info, *next;
+
+	list_for_each_safe(&qp->seginfo_head, info, next, qp_entry) {
+		if (!info->last)
+			break;
+		if (info->completed)
+			continue;
+		switch (info->opcode) {
+		case rdmap_opcode_rdma_write:
+		case rdmap_opcode_rdma_read_request:
+			/* nothing to do */
+			info->completed = true;
+			break;
+		case rdmap_opcode_rdma_read_response:
+			info->completed = deliver_rdma_read_response(
+					qp, info->context);
+			break;
+		case rdmap_opcode_send:
+		case rdmap_opcode_send_inv:
+		case rdmap_opcode_send_se:
+		case rdmap_opcode_send_se_inv:
+			info->completed = deliver_send(qp, info->context);
+			break;
+		case rdmap_opcode_terminate:
+			/* FIXME: terminate effect should happen here, not at
+			 * placement phase */
+			break;
+		case rdmap_opcode_immediate_data:
+		case rdmap_opcode_immediate_data_se:
+			info->completed = deliver_immediate(qp, info->context);
+			break;
+		}
+		if (info->completed && next && next->completed) {
+			list_del(&info->qp_entry);
+			free(info);
+		} else if (!info->completed || (next && info->range.max + 1
+							!= next->range.min)) {
+			break;
+		}
+	}
+} /* deliver_rdma_msgs */
+
+
 /* Make forward progress on the queue pair.  This does not guarantee that
  * everything that could be done will be done, but rather that if this function
  * is called at a regular interval, user operations will eventually complete
@@ -2141,11 +2262,15 @@ progress_qp(struct usiw_qp *qp)
 	uint32_t psn;
 	int scount, ret;
 
+	/* Place all incoming data segments---delivery comes later */
 	/* Receive loop fills in now for us */
 	process_receive_queue(qp, list_top(&qp->sq.active_head, struct usiw_send_wqe, active), &now);
 
 	/* Call any timers only once per millisecond */
 	sweep_unacked_packets(qp, now);
+
+	/* Delivery phase */
+	deliver_rdma_msgs(qp);
 
 	/* Process RDMA READ Response last segments. */
 	while (!binheap_empty(qp->remote_ep.recv_rresp_last_psn)) {

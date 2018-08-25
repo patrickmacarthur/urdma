@@ -902,6 +902,7 @@ usiw_create_qp(struct ibv_pd *pd, struct ibv_qp_init_attr *qp_init_attr)
 	qp->readresp_store = NULL;
 	qp->readresp_head_msn = 1;
 	qp->ord_active = 0;
+	list_head_init(&qp->seginfo_head);
 
 	ee = &qp->remote_ep;
 	ee->expected_read_msn = 1;
