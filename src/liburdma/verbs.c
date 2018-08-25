@@ -1179,6 +1179,7 @@ usiw_post_send(struct ibv_qp *ib_qp, struct ibv_send_wr *wr,
 			wqe->rkey = wr->wr.rdma.rkey;
 			wqe->imm_data = wr->imm_data;
 			wqe->flags |= usiw_send_imm;
+			wqe->imm_sent = wqe->imm_acked = false;
 			if ((wr->send_flags & IBV_SEND_INLINE)
 					&& (ret = do_inline(qp, wqe, wr))!=0) {
 				goto errout;

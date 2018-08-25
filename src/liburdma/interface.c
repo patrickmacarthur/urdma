@@ -534,7 +534,8 @@ tx_pending_entry(struct ee_state *ep, uint32_t psn)
 static uint32_t
 send_ddp_segment(struct usiw_qp *qp, struct rte_mbuf *sendmsg,
 		struct read_response_state *readresp,
-		struct usiw_send_wqe *wqe, size_t payload_length)
+		struct usiw_send_wqe *wqe, size_t payload_length,
+		int rdma_opcode)
 {
 	struct pending_datagram_info *pending;
 	uint32_t psn = qp->remote_ep.send_next_psn++;
@@ -543,6 +544,7 @@ send_ddp_segment(struct usiw_qp *qp, struct rte_mbuf *sendmsg,
 	pending->wqe = wqe;
 	pending->readresp = readresp;
 	pending->transmit_count = 0;
+	pending->rdma_opcode = rdma_opcode;
 	pending->ddp_length = payload_length;
 	if (!qp->dev->flags & port_checksum_offload) {
 		pending->ddp_raw_cksum = rte_raw_cksum(
@@ -908,7 +910,8 @@ do_rdmap_send(struct usiw_qp *qp, struct usiw_send_wqe *wqe)
 					wqe->bytes_sent);
 		}
 
-		send_ddp_segment(qp, sendmsg, NULL, wqe, payload_length);
+		send_ddp_segment(qp, sendmsg, NULL, wqe, payload_length,
+				rdmap_opcode_send);
 		RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> SEND transmit msn=%" PRIu32 " [%zu-%zu]\n",
 				qp->shm_qp->dev_id, qp->shm_qp->qp_id,
 				wqe->msn,
@@ -962,7 +965,8 @@ do_rdmap_write(struct usiw_qp *qp, struct usiw_send_wqe *wqe)
 					wqe->bytes_sent);
 		}
 
-		send_ddp_segment(qp, sendmsg, NULL, wqe, payload_length);
+		send_ddp_segment(qp, sendmsg, NULL, wqe, payload_length,
+				rdmap_opcode_rdma_write);
 		RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> RDMA WRITE transmit bytes %zu through %zu\n",
 				qp->shm_qp->dev_id, qp->shm_qp->qp_id,
 				wqe->bytes_sent,
@@ -985,19 +989,21 @@ do_rdmap_write(struct usiw_qp *qp, struct usiw_send_wqe *wqe)
 			= RDMAP_V1 | rdmap_opcode_immediate_data;
 		imm_rdmap->head.sink_stag = rte_cpu_to_be_32(0);
 		imm_rdmap->qn = rte_cpu_to_be_32(0);
-		imm_rdmap->msn = rte_cpu_to_be_32(
-				wqe->remote_ep->next_send_msn);
-		wqe->remote_ep->next_send_msn++;
+		wqe->msn = wqe->remote_ep->next_send_msn++;
+		imm_rdmap->msn = rte_cpu_to_be_32(wqe->msn);
 		imm_rdmap->mo = rte_cpu_to_be_32(0);
 		imm_data_payload = (uint64_t *)rte_pktmbuf_append(sendmsg, payload_length);
 		*imm_data_payload = wqe->imm_data;
 
-		send_ddp_segment(qp, sendmsg, NULL, wqe, payload_length);
+		send_ddp_segment(qp, sendmsg, NULL, wqe, payload_length,
+				rdmap_opcode_immediate_data);
 		RTE_LOG(INFO, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> IMMEDIATE DATA %" PRIx32 " msn=%" PRIu32 "\n",
 				qp->shm_qp->dev_id, qp->shm_qp->qp_id,
 				rte_be_to_cpu_32(*imm_data_payload),
 				rte_be_to_cpu_32(imm_rdmap->msn));
 		wqe->flags &= ~usiw_send_imm;
+		wqe->imm_sent = true;
+		wqe->imm_acked = false;
 		wqe->bytes_sent += payload_length;
 	}
 
@@ -1051,7 +1057,8 @@ do_rdmap_read_request(struct usiw_qp *qp, struct usiw_send_wqe *wqe)
 	new_rdmap->source_stag = rte_cpu_to_be_32(wqe->rkey);
 	new_rdmap->source_offset = rte_cpu_to_be_64(wqe->remote_addr);
 
-	send_ddp_segment(qp, sendmsg, NULL, wqe, 0);
+	send_ddp_segment(qp, sendmsg, NULL, wqe, 0,
+			rdmap_opcode_rdma_read_request);
 
 	wqe->state = SEND_WQE_WAIT;
 } /* do_rdmap_read_request */
@@ -1132,7 +1139,8 @@ do_rdmap_terminate(struct usiw_qp *qp, struct packet_context *orig,
 	if (payload) {
 		payload->ddp_seg_len = rte_cpu_to_be_16(orig->ddp_seg_length);
 	}
-	(void)send_ddp_segment(qp, sendmsg, NULL, NULL, 0);
+	(void)send_ddp_segment(qp, sendmsg, NULL, NULL, 0,
+				rdmap_opcode_terminate);
 } /* do_rdmap_terminate */
 
 
@@ -1380,7 +1388,8 @@ respond_rdma_read(struct usiw_qp *qp)
 					payload_length);
 
 			(void)send_ddp_segment(qp, sendmsg, readresp,
-					NULL, payload_length);
+					NULL, payload_length,
+					rdmap_opcode_rdma_read_response);
 			readresp->vaddr += payload_length;
 			readresp->msg_size -= payload_length;
 			readresp->sink_offset += payload_length;
@@ -1585,7 +1594,7 @@ update_seginfo(struct usiw_qp *qp, struct packet_context *orig)
 			info->range.max++;
 			info->length += rdma_length;
 			return 0;
-		} else if (orig->psn > info->range.min) {
+		} else if (orig->psn < info->range.min) {
 			break;
 		}
 	}
@@ -1599,7 +1608,11 @@ update_seginfo(struct usiw_qp *qp, struct packet_context *orig)
 	next->length = rdma_length;
 	next->last = DDP_GET_L(rdmap->head.ddp_flags);
 	next->completed = false;
-	list_add_after(&qp->seginfo_head, &info->qp_entry, &next->qp_entry);
+	if (info)
+		list_add_before(&qp->seginfo_head, &info->qp_entry,
+				&next->qp_entry);
+	else
+		list_add_tail(&qp->seginfo_head, &next->qp_entry);
 }	/* update_seginfo */
 
 
@@ -1722,11 +1735,16 @@ do_process_ack(struct usiw_qp *qp, struct usiw_send_wqe *wqe,
 	wqe->bytes_acked += pending->ddp_length;
 	assert(wqe->bytes_sent >= wqe->bytes_acked);
 
+	if (pending->rdma_opcode == rdmap_opcode_immediate_data
+			|| pending->rdma_opcode
+				== rdmap_opcode_immediate_data_se) {
+		wqe->imm_acked = true;
+	}
 	if (wqe->opcode != usiw_wr_read
-			&& wqe->bytes_acked == wqe->total_length) {
+			&& wqe->bytes_acked == wqe->total_length
+			&& (wqe->imm_sent ^ wqe->imm_acked)) {
 		assert(wqe->state == SEND_WQE_WAIT);
 		wqe->state = SEND_WQE_COMPLETE;
-		try_complete_wqe(qp, wqe);
 	}
 } /* do_process_ack */
 
@@ -1876,7 +1894,8 @@ ddp_place_tagged_data(struct usiw_qp *qp, struct packet_context *orig)
 
 	mr = *candidate;
 	vaddr = (uintptr_t)rte_be_to_cpu_64(rdmap->offset);
-	rdma_length = orig->ddp_seg_length - sizeof(*rdmap);
+	rdma_length = orig->rdma_length
+		= orig->ddp_seg_length - sizeof(*rdmap);
 	if (vaddr < (uintptr_t)mr->mr.addr || vaddr + rdma_length
 			> (uintptr_t)mr->mr.addr + mr->mr.length) {
 		RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> received DDP tagged message with destination [%" PRIxPTR ", %" PRIxPTR "] outside of memory region [%" PRIxPTR ", %" PRIxPTR "]\n",
@@ -2143,11 +2162,6 @@ process_data_packet(struct usiw_qp *qp, struct rte_mbuf *mbuf)
 static void
 progress_send_wqe(struct usiw_qp *qp, struct usiw_send_wqe *wqe)
 {
-	if (wqe->state == SEND_WQE_COMPLETE) {
-		try_complete_wqe(qp, wqe);
-		return;
-	}
-
 	switch (wqe->opcode) {
 	case usiw_wr_send:
 		do_rdmap_send((struct usiw_qp *)qp, wqe);
@@ -2204,6 +2218,22 @@ process_receive_queue(struct usiw_qp *qp, void *prefetch_addr, uint64_t *now)
 }
 
 
+static bool
+deliver_rdma_write(struct usiw_qp *qp, struct recved_segment_info *info,
+		   struct recved_segment_info *next)
+{
+	struct usiw_recv_wqe *wqe;
+	if (!next)
+		return false;
+	if (next->opcode == rdmap_opcode_immediate_data
+			|| next->opcode == rdmap_opcode_immediate_data_se) {
+		wqe = next->context;
+		wqe->input_size = info->length;
+	}
+	return true;
+}	/* deliver_rdma_write */
+
+
 static void
 deliver_rdma_msgs(struct usiw_qp *qp)
 {
@@ -2216,6 +2246,8 @@ deliver_rdma_msgs(struct usiw_qp *qp)
 			continue;
 		switch (info->opcode) {
 		case rdmap_opcode_rdma_write:
+			info->completed = deliver_rdma_write(qp, info, next);
+			break;
 		case rdmap_opcode_rdma_read_request:
 			/* nothing to do */
 			info->completed = true;
@@ -2269,9 +2301,6 @@ progress_qp(struct usiw_qp *qp)
 	/* Call any timers only once per millisecond */
 	sweep_unacked_packets(qp, now);
 
-	/* Delivery phase */
-	deliver_rdma_msgs(qp);
-
 	/* Process RDMA READ Response last segments. */
 	while (!binheap_empty(qp->remote_ep.recv_rresp_last_psn)) {
 		binheap_peek(qp->remote_ep.recv_rresp_last_psn, &psn);
@@ -2288,13 +2317,15 @@ progress_qp(struct usiw_qp *qp)
 			if (!(WARN_ONCE(!send_wqe,
 					"No RDMA READ request pending\n"))) {
 				send_wqe->state = SEND_WQE_COMPLETE;
-				try_complete_wqe(qp, send_wqe);
 			}
 			binheap_pop(qp->remote_ep.recv_rresp_last_psn);
 		} else {
 			break;
 		}
 	}
+
+	/* Delivery phase */
+	deliver_rdma_msgs(qp);
 
 	scount = 0;
 	list_for_each_safe(&qp->sq.active_head, send_wqe, next, active) {

@@ -141,7 +141,8 @@ struct pending_datagram_info {
 	uint64_t next_retransmit;
 	struct usiw_send_wqe *wqe;
 	struct read_response_state *readresp;
-	uint16_t transmit_count;
+	uint8_t transmit_count;
+	uint8_t rdma_opcode;
 	uint16_t ddp_length;
 	uint32_t ddp_raw_cksum;
 	uint32_t psn;
@@ -169,6 +170,8 @@ enum {
 
 struct usiw_send_wqe {
 	enum usiw_send_opcode opcode;
+	bool imm_sent;
+	bool imm_acked;
 	void *wr_context;
 	struct ee_state *remote_ep;
 	uint64_t remote_addr;
