@@ -754,8 +754,8 @@ post_recv_cqe(struct usiw_qp *qp, struct usiw_recv_wqe *wqe,
 	} else {
 		cqe->opcode = IBV_WC_RECV_RDMA_WITH_IMM;
 		cqe->imm_data = wqe->imm_data;
-		RTE_LOG(INFO, USER1, "Post completion with imm_data: %" PRIx32 "\n",
-			rte_be_to_cpu_32(cqe->imm_data));
+		RTE_LOG(INFO, USER1, "Post completion with imm_data: %" PRIx32 " byte_len %zu\n",
+			rte_be_to_cpu_32(cqe->imm_data), wqe->input_size);
 	}
 	cqe->byte_len = wqe->input_size;
 	cqe->qp_num = qp->ib_qp.qp_num;
@@ -1328,8 +1328,8 @@ place_immediate(struct usiw_qp *qp, struct packet_context *orig)
 	wqe->recv_size = 0;
 	wqe->has_imm = true;
 	wqe->complete = true;
-	RTE_LOG(INFO, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> receive IMMEDIATE DATA %" PRIx32 "\n",
-			qp->shm_qp->dev_id, qp->shm_qp->qp_id,
+	RTE_LOG(INFO, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> receive IMMEDIATE DATA [msn=%" PRIu32 "] %" PRIx32 "\n",
+			qp->shm_qp->dev_id, qp->shm_qp->qp_id, msn,
 			rte_be_to_cpu_32(wqe->imm_data));
 
 	orig->rdma_length = payload_length;
@@ -1575,11 +1575,15 @@ update_seginfo(struct usiw_qp *qp, struct packet_context *orig)
 	struct rdmap_tagged_packet *rdmap;
 	struct recved_segment_info *info, *next;
 	uint32_t rdma_length;
+	uint8_t opcode;
 	int ret;
 
 	rdmap = (struct rdmap_tagged_packet *)orig->rdmap;
 	rdma_length = orig->rdma_length;
+	opcode = RDMAP_GET_OPCODE(rdmap->head.rdmap_info);
 
+	RTE_LOG(INFO, USER1, "Update segment info for psn %" PRIu32 " opcode %" PRIu8 "\n",
+			orig->psn, opcode);
 	list_for_each_safe(&qp->seginfo_head, info, next, qp_entry) {
 		assert(orig->psn != info->range.min
 				&& orig->psn != info->range.max);
@@ -2229,6 +2233,7 @@ deliver_rdma_write(struct usiw_qp *qp, struct recved_segment_info *info,
 			|| next->opcode == rdmap_opcode_immediate_data_se) {
 		wqe = next->context;
 		wqe->input_size = info->length;
+		RTE_LOG(INFO, USER1, "psn=%" PRIu32 " set input_size %zu\n", info->range.max, wqe->input_size);
 	}
 	return true;
 }	/* deliver_rdma_write */
@@ -2270,6 +2275,10 @@ deliver_rdma_msgs(struct usiw_qp *qp)
 		case rdmap_opcode_immediate_data_se:
 			info->completed = deliver_immediate(qp, info->context);
 			break;
+		}
+		if (info->completed) {
+			RTE_LOG(INFO, USER1, "Completed psn=%" PRIx32 "-%" PRIx32 "\n",
+					info->range.min, info->range.max);
 		}
 		if (info->completed && next && next->completed) {
 			list_del(&info->qp_entry);
