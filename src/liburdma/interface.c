@@ -1285,6 +1285,55 @@ process_send(struct usiw_qp *qp, struct packet_context *orig)
 }	/* process_send */
 
 
+static bool
+do_qp_lock(struct usiw_qp *qp, struct rdma_qp_lock *target)
+{
+	if (!target->lock) {
+		target->lock = 1;
+		target->qpn = qp->ib_qp.qp_num;
+		return true;
+	} else {
+		target->waitcount++;
+		return false;
+	}
+}	/* do_qp_lock */
+
+
+static bool
+do_qp_unlock(struct usiw_qp *qp, struct rdma_qp_lock *target)
+{
+	if (target->qpn != qp->ib_qp.qp_num || !target->lock) {
+		/* TERMINATE */
+		return false;
+	}
+	target->lock = 0;
+	/* The next waiter will try to regain the lock when the loop goes
+	 * around the next time. */
+	return true;
+}	/* do_qp_unlock */
+
+
+static bool
+dispatch_lock_op(struct usiw_qp *qp, struct read_atomic_response_state *readresp)
+{
+	struct rdma_qp_lock *target;
+	bool ret;
+
+	pthread_mutex_lock(qp->dev->driver->rdma_atomic_mutex);
+	target = (struct rdma_qp_lock *)readresp->vaddr;
+	switch (readresp->lock.opcode) {
+	case rdmap_lock_lock:
+		ret = do_qp_lock(qp, target);
+		break;
+	case rdmap_lock_unlock:
+		ret = do_qp_unlock(qp, target);
+		break;
+	}
+	pthread_mutex_unlock(qp->dev->driver->rdma_atomic_mutex);
+	return ret;
+} /* dispatch_lock_op */
+
+
 /* This function implements the masked FetchAdd operation specified by iWARP.
  * This is optimized for the common case where the mask is 0. The implementation
  * follows the pseudocode specified in RFC 7306. */
@@ -1406,6 +1455,50 @@ respond_atomic(struct usiw_qp *qp, struct read_atomic_response_state *readresp)
 
 
 static int
+respond_lock(struct usiw_qp *qp, struct read_atomic_response_state *readresp)
+{
+	struct rdmap_lockresp_packet *new_rdmap;
+	struct rte_mbuf *sendmsg;
+	size_t dgram_length;
+	uint64_t orig;
+
+	if (likely(!readresp->lock.done)) {
+		if (!dispatch_lock_op(qp, readresp))
+			return 0;
+	}
+
+	if (serial_less_32(readresp->sink_ep->send_next_psn,
+				readresp->sink_ep->send_max_psn)) {
+		sendmsg = rte_pktmbuf_alloc(qp->dev->tx_ddp_mempool);
+
+		dgram_length = sizeof(*new_rdmap);
+
+		new_rdmap = (struct rdmap_lockresp_packet *)rte_pktmbuf_append(
+				sendmsg, dgram_length);
+		new_rdmap->untagged.head.ddp_flags = DDP_V1_UNTAGGED_LAST_DF;
+		new_rdmap->untagged.head.rdmap_info = RDMAP_V1
+			| rdmap_opcode_atomic_response;
+		new_rdmap->untagged.head.sink_stag
+			= rte_cpu_to_be_32(readresp->sink_stag);
+		new_rdmap->untagged.qn
+			= rte_cpu_to_be_32(ddp_queue_atomic_response);
+		new_rdmap->untagged.msn
+			= rte_cpu_to_be_32(qp->readresp_head_msn++);
+		new_rdmap->status = rte_cpu_to_be_32(0);
+
+		(void)send_ddp_segment(qp, sendmsg, readresp,
+				NULL, 0);
+
+		/* Signal that this is done */
+		readresp->active = false;
+		return 1;
+	} else {
+		return 0;
+	}
+} /* respond_atomic */
+
+
+static int
 respond_rdma_read(struct usiw_qp *qp, struct read_atomic_response_state *readresp)
 {
 	struct rdmap_tagged_packet *new_rdmap;
@@ -1474,6 +1567,9 @@ respond_next_read_atomic(struct usiw_qp *qp)
 			break;
 		case read_response:
 			count += respond_rdma_read(qp, readresp);
+			break;
+		case lock_response:
+			count += respond_lock(qp, readresp);
 			break;
 		}
 	}

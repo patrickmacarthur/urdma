@@ -82,6 +82,11 @@ enum rdmap_atomic_opcodes {
 	rdmap_atomic_cmpswap = 1,
 };
 
+enum rdmap_lock_opcodes {
+	rdmap_lock_lock = 0,
+	rdmap_lock_unlock = 1,
+};
+
 struct rdmap_tagged_packet {
 	struct rdmap_packet head;
 	uint64_t offset;
@@ -134,12 +139,24 @@ struct rdmap_atomicreq_packet {
 } __attribute__((__packed__));
 static_assert(sizeof(struct rdmap_atomicreq_packet) == 70, "unexpected sizeof(rdmap_atomicreq_packet)");
 
+struct rdmap_lockreq_packet {
+	struct rdmap_untagged_packet untagged;
+	uint32_t opcode;
+} __attribute__((__packed__));
+static_assert(sizeof(struct rdmap_lockreq_packet) == 22, "unexpected sizeof(rdmap_lockreq_packet)");
+
 struct rdmap_atomicresp_packet {
 	struct rdmap_untagged_packet untagged;
 	uint32_t req_id;
 	uint64_t orig_value;
 } __attribute__((__packed__));
 static_assert(sizeof(struct rdmap_atomicresp_packet) == 30, "unexpected sizeof(rdmap_atomicresp_packet)");
+
+struct rdmap_lockresp_packet {
+	struct rdmap_untagged_packet untagged;
+	uint32_t status;
+} __attribute__((__packed__));
+static_assert(sizeof(struct rdmap_lockresp_packet) == 22, "unexpected sizeof(rdmap_lockresp_packet)");
 
 enum rdmap_packet_type {
 	rdmap_opcode_rdma_write = 0,
@@ -154,6 +171,8 @@ enum rdmap_packet_type {
 	rdmap_opcode_imm_data_se = 9,
 	rdmap_opcode_atomic_request = 10,
 	rdmap_opcode_atomic_response = 11,
+	rdmap_opcode_lock_request = 14,
+	rdmap_opcode_lock_response = 15,
 };
 
 enum /*rdmap_hdrct*/ {

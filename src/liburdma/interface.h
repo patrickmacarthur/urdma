@@ -102,6 +102,13 @@ struct usiw_context;
 struct usiw_device;
 struct usiw_qp;
 
+struct rdma_qp_lock {
+	uint8_t lock;
+	uint8_t waitcount;
+	uint16_t reserved_2;
+	uint32_t qpn;
+};
+
 struct arp_entry {
 	struct ether_addr ether_addr;
 	struct usiw_send_wqe *request;
@@ -268,6 +275,7 @@ struct read_atomic_response_state {
 	enum {
 		read_response,
 		atomic_response,
+		lock_response,
 	} type;
 	struct list_node qp_entry;
 	struct ee_state *sink_ep;
@@ -286,6 +294,10 @@ struct read_atomic_response_state {
 			uint64_t compare_mask;
 			bool done;
 		} atomic;
+		struct {
+			unsigned int opcode;
+			bool done;
+		} lock;
 	};
 };
 
@@ -330,6 +342,7 @@ struct usiw_qp {
 	struct usiw_mr_table *pd;
 
 	struct ee_state remote_ep;
+	struct list_head qp_lock_list;
 
 	struct ibv_qp ib_qp;
 };

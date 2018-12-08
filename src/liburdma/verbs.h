@@ -61,6 +61,9 @@ struct urdma_ah {
 	uint32_t ipv4_addr;
 };
 
+struct urdma_send_wr {
+};
+
 struct urdma_qp_stats {
         uintmax_t *recv_count_histo;
 		/**< An array of recv_max_burst_size + 1 elements.  The
@@ -126,5 +129,19 @@ urdma_free_qp_stats_ex(struct urdma_qp_stats_ex *stats);
 
 struct urdma_qp_stats_ex *
 urdma_query_qp_stats_ex(const struct ibv_qp *qp);
+
+/* Creates a new ibv_post_send operation with the given name, returns the
+ * integer to put in the opcode field of the ibv_send_wr struct. */
+int
+add_send_op(const char *name, int (*)(struct ibv_send_wr *));
+
+/* Returns the integer to put in the opcode field of the ibv_send_wr struct
+ * for the given name. */
+int
+get_send_op(const char *name);
+
+/* Lock op: if lock holder QP dies holding the lock, lock is released and next
+ * locker gets a completion error with LOCK_INTERRUPTED. If remote lock endpoint
+ * dies, QP dies and gets flush error, etc. */
 
 #endif

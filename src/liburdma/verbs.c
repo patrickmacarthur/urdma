@@ -1481,3 +1481,15 @@ urdma_free_context(struct ibv_context *ib_ctx)
 	struct usiw_context *ctx = usiw_get_context(ib_ctx);
 	atomic_store(&ctx->h->ctxp, 0);
 } /* urdma_free_context */
+
+
+int
+urdma_post_send_lock(struct ibv_send_wr *wr)
+{
+}
+
+
+int
+urdma_post_send_unlock(struct ibv_send_wr *wr)
+{
+}
