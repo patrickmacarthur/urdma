@@ -327,6 +327,70 @@ urdma_accl_post_read(struct ibv_qp *ib_qp, void *addr, size_t length,
 
 
 static int
+urdma_post_remote_lock_op(struct ibv_qp *ib_qp, void *local_addr,
+			  uint64_t remote_addr, uint32_t rkey, void *context,
+			  int opcode)
+{
+	struct usiw_send_wqe *wqe;
+	struct ee_state *ee;
+	struct usiw_qp *qp;
+	int x;
+
+	qp = container_of(ib_qp, struct usiw_qp, ib_qp);
+	if (!qp_connected(qp)) {
+		return -EINVAL;
+	}
+
+	ee = &qp->remote_ep;
+	if (!ee) {
+		return -EINVAL;
+	}
+
+	x = qp_get_next_send_wqe(qp, &wqe);
+	if (x < 0)
+		return x;
+
+	wqe->opcode = usiw_wr_lock;
+	wqe->wr_context = context;
+	wqe->iov[0].iov_base = local_addr;
+	wqe->iov[0].iov_len = sizeof(uint32_t);
+	wqe->iov_count = 1;
+	wqe->remote_addr = remote_addr;
+	wqe->rkey = rkey;
+	wqe->remote_ep = ee;
+	wqe->state = SEND_WQE_INIT;
+	wqe->atomic_opcode = opcode;
+	wqe->msn = 0; /* will be assigned at send time */
+	wqe->local_stag = 0;
+	wqe->bytes_sent = 0;
+	x = rte_ring_enqueue(qp->sq.ring, wqe);
+	assert(x == 0);
+
+	return 0;
+}
+
+
+__attribute__((__visibility__("default")))
+int
+urdma_remote_lock(struct ibv_qp *ib_qp, void *local_addr,
+		  uint64_t remote_addr, uint32_t rkey, void *context)
+{
+	return post_urdma_remote_lock_op(ib_qp, local_addr, remote_addr, rkey,
+					 context, rdmap_lock_lock);
+} /* urdma_remote_lock */
+
+
+__attribute__((__visibility__("default")))
+int
+urdma_remote_unlock(struct ibv_qp *ib_qp, void *local_addr,
+		  uint64_t remote_addr, uint32_t rkey, void *context)
+{
+	return post_urdma_remote_lock_op(ib_qp, local_addr, remote_addr, rkey,
+					 context, rdmap_lock_unlock);
+} /* urdma_remote_unlock */
+
+
+static int
 usiw_query_device(struct ibv_context *context,
 		struct ibv_device_attr *device_attr)
 {

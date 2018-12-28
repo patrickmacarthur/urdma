@@ -163,6 +163,7 @@ enum usiw_send_opcode {
 	usiw_wr_write = 1,
 	usiw_wr_read = 2,
 	usiw_wr_atomic = 3,
+	usiw_wr_lock = 4,
 };
 
 enum {

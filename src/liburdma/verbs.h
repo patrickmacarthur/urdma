@@ -143,5 +143,12 @@ get_send_op(const char *name);
 /* Lock op: if lock holder QP dies holding the lock, lock is released and next
  * locker gets a completion error with LOCK_INTERRUPTED. If remote lock endpoint
  * dies, QP dies and gets flush error, etc. */
+int
+urdma_remote_lock(struct ibv_qp *ib_qp, void *local_addr,
+		  uint64_t remote_addr, uint32_t rkey, void *context);
+
+int
+urdma_remote_unlock(struct ibv_qp *ib_qp, void *local_addr,
+		  uint64_t remote_addr, uint32_t rkey, void *context);
 
 #endif

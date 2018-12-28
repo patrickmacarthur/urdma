@@ -74,7 +74,6 @@ enum ddp_queue_number {
 	ddp_queue_read_request = 1,
 	ddp_queue_terminate = 2,
 	ddp_queue_atomic_response = 3,
-	ddp_queue_ack = 4,
 };
 
 enum rdmap_atomic_opcodes {
@@ -142,8 +141,11 @@ static_assert(sizeof(struct rdmap_atomicreq_packet) == 70, "unexpected sizeof(rd
 struct rdmap_lockreq_packet {
 	struct rdmap_untagged_packet untagged;
 	uint32_t opcode;
+	uint32_t req_id;
+	uint32_t remote_stag;
+	uint64_t remote_offset;
 } __attribute__((__packed__));
-static_assert(sizeof(struct rdmap_lockreq_packet) == 22, "unexpected sizeof(rdmap_lockreq_packet)");
+static_assert(sizeof(struct rdmap_lockreq_packet) == 38, "unexpected sizeof(rdmap_lockreq_packet)");
 
 struct rdmap_atomicresp_packet {
 	struct rdmap_untagged_packet untagged;
@@ -154,9 +156,10 @@ static_assert(sizeof(struct rdmap_atomicresp_packet) == 30, "unexpected sizeof(r
 
 struct rdmap_lockresp_packet {
 	struct rdmap_untagged_packet untagged;
+	uint32_t req_id;
 	uint32_t status;
 } __attribute__((__packed__));
-static_assert(sizeof(struct rdmap_lockresp_packet) == 22, "unexpected sizeof(rdmap_lockresp_packet)");
+static_assert(sizeof(struct rdmap_lockresp_packet) == 26, "unexpected sizeof(rdmap_lockresp_packet)");
 
 enum rdmap_packet_type {
 	rdmap_opcode_rdma_write = 0,

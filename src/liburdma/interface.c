@@ -220,6 +220,7 @@ usiw_send_wqe_queue_lookup(struct usiw_send_wqe_queue *q,
 		switch (lptr->opcode) {
 		case usiw_wr_send:
 		case usiw_wr_atomic:
+		case usiw_wr_lock:
 			if (wr_key_data == lptr->msn) {
 				*wqe = lptr;
 				return 0;
@@ -775,6 +776,8 @@ get_ibv_send_wc_opcode(struct usiw_send_wqe *wqe)
 			break;
 		}
 		break;
+	case usiw_wr_lock:
+		return 255;
 	default:
 		assert(0);
 		return -1;
@@ -1028,6 +1031,57 @@ do_rdmap_atomic(struct usiw_qp *qp, struct usiw_send_wqe *wqe)
 
 	wqe->state = SEND_WQE_WAIT;
 } /* do_rdmap_atomic */
+
+
+static void
+do_rdmap_lock(struct usiw_qp *qp, struct usiw_send_wqe *wqe)
+{
+	struct rdmap_atomicreq_packet *new_rdmap;
+	struct rte_mbuf *sendmsg;
+	unsigned int packet_length;
+
+	if (wqe->state != SEND_WQE_TRANSFER) {
+		return;
+	}
+
+	if (qp->ord_active >= qp->shm_qp->ord_max) {
+		/* Cannot issue more than ord_max simultaneous RDMA READ
+		 * and Atomic Requests. */
+		return;
+	} else if (wqe->remote_ep->send_next_psn
+			== wqe->remote_ep->send_max_psn
+			|| serial_greater_32(wqe->remote_ep->send_next_psn,
+				wqe->remote_ep->send_max_psn)) {
+		/* We have reached the maximum number of credits we are allowed
+		 * to send. */
+		return;
+	}
+	qp->ord_active++;
+
+	sendmsg = rte_pktmbuf_alloc(qp->dev->tx_ddp_mempool);
+
+	packet_length = sizeof(*new_rdmap);
+	new_rdmap = (struct rdmap_atomicreq_packet *)rte_pktmbuf_append(
+				sendmsg, packet_length);
+	new_rdmap->untagged.head.ddp_flags = DDP_V1_UNTAGGED_LAST_DF;
+	new_rdmap->untagged.head.rdmap_info
+		= rdmap_opcode_lock_request | RDMAP_V1;
+	new_rdmap->untagged.head.sink_stag = rte_cpu_to_be_32(wqe->local_stag);
+	new_rdmap->untagged.qn = rte_cpu_to_be_32(ddp_queue_read_request);
+	new_rdmap->untagged.msn = rte_cpu_to_be_32(wqe->msn);
+	new_rdmap->untagged.mo = rte_cpu_to_be_32(0);
+	new_rdmap->opcode = rte_cpu_to_be_32(wqe->atomic_opcode);
+	new_rdmap->req_id = rte_cpu_to_be_32(wqe->msn);
+	new_rdmap->remote_stag = rte_cpu_to_be_32(wqe->rkey);
+	new_rdmap->remote_offset =
+		rte_cpu_to_be_64((uintptr_t)wqe->remote_addr);
+
+	send_ddp_segment(qp, sendmsg, NULL, wqe, 0);
+	RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> LOCKREQ transmit msn=%" PRIu32 "\n",
+			qp->shm_qp->dev_id, qp->shm_qp->qp_id, wqe->msn);
+
+	wqe->state = SEND_WQE_WAIT;
+} /* do_rdmap_lock */
 
 static void
 do_rdmap_read_request(struct usiw_qp *qp, struct usiw_send_wqe *wqe)
@@ -1727,6 +1781,81 @@ process_atomic_request(struct usiw_qp *qp, struct packet_context *orig)
 }	/* process_atomic_request */
 
 
+static void
+process_lock_request(struct usiw_qp *qp, struct packet_context *orig)
+{
+	struct rdmap_lockreq_packet *rdmap
+		= (struct rdmap_lockreq_packet *)orig->rdmap;
+	struct read_atomic_response_state *readresp;
+	uint32_t rkey;
+	uint32_t msn;
+	struct usiw_mr **candidate;
+	struct usiw_mr *mr;
+
+	msn = rte_be_to_cpu_32(rdmap->untagged.msn);
+	if (msn < orig->src_ep->expected_read_msn
+			|| msn >= qp->readresp_head_msn + qp->shm_qp->ird_max) {
+		RTE_LOG(INFO, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> LOCK failure: expected MSN in range [%" PRIu32 ", %" PRIu32 "] received %" PRIu32 "\n",
+				qp->shm_qp->dev_id, qp->shm_qp->qp_id,
+				orig->src_ep->expected_read_msn,
+				qp->readresp_head_msn + qp->shm_qp->ird_max,
+				msn);
+		do_rdmap_terminate(qp, orig, ddp_error_untagged_invalid_msn);
+		return;
+	}
+	if (msn == orig->src_ep->expected_read_msn)
+		orig->src_ep->expected_read_msn++;
+
+	rkey = rte_be_to_cpu_32(rdmap->remote_stag);
+	candidate = usiw_mr_lookup(qp->pd, rkey);
+	if (!candidate) {
+		RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> LOCK failure: invalid rkey %" PRIx32 "\n",
+				qp->shm_qp->dev_id, qp->shm_qp->qp_id,
+				rkey);
+		do_rdmap_terminate(qp, orig, rdmap_error_stag_invalid);
+		return;
+	}
+
+	mr = *candidate;
+	uintptr_t vaddr = (uintptr_t)rte_be_to_cpu_64(rdmap->remote_offset);
+	size_t rdma_length = sizeof(uint64_t);
+	if (vaddr < (uintptr_t)mr->mr.addr || vaddr + rdma_length
+			> (uintptr_t)mr->mr.addr + mr->mr.length) {
+		RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> LOCK failure: target [%" PRIxPTR ", %" PRIxPTR
+				"] outside of memory region [%" PRIxPTR ", %" PRIxPTR "]\n",
+				qp->shm_qp->dev_id, qp->shm_qp->qp_id,
+				vaddr, vaddr + rdma_length,
+				(uintptr_t)mr->mr.addr,
+				(uintptr_t)mr->mr.addr + mr->mr.length);
+		do_rdmap_terminate(qp, orig,
+				rdmap_error_base_or_bounds_violation);
+		return;
+	} else if (vaddr & 7) {
+		RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> LOCK failure: target %" PRIxPTR
+				"] is not aligned on 8-byte boundary\n",
+				qp->shm_qp->dev_id, qp->shm_qp->qp_id, vaddr);
+		do_rdmap_terminate(qp, orig,
+				rdmap_error_remote_stream_catastrophic);
+	}
+
+	readresp = &qp->readresp_store[msn % qp->shm_qp->ird_max];
+	if (readresp->active) {
+		RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> LOCK failure: duplicate MSN %" PRIu32 "\n",
+				qp->shm_qp->dev_id, qp->shm_qp->qp_id, msn);
+		do_rdmap_terminate(qp, orig,
+				rdmap_error_remote_stream_catastrophic);
+		return;
+	}
+	readresp->active = true;
+	readresp->type = lock_response;
+	readresp->vaddr = mr->mr.addr;
+	readresp->lock.opcode = rte_be_to_cpu_32(rdmap->opcode);
+	readresp->lock.done = false;
+	readresp->sink_stag = rdmap->untagged.head.sink_stag;
+	readresp->sink_ep = orig->src_ep;
+}	/* process_lock_request */
+
+
 /** Complete the requested WQE if and only if all completion ordering rules
  * have been met. */
 static void
@@ -1830,6 +1959,42 @@ process_atomic_response(struct usiw_qp *qp, struct packet_context *orig)
 
 	binheap_insert(qp->remote_ep.recv_rresp_last_psn, orig->psn);
 }	/* process_atomic_response */
+
+
+static void
+process_lock_response(struct usiw_qp *qp, struct packet_context *orig)
+{
+	struct rdmap_lockresp_packet *rdmap;
+	struct usiw_send_wqe *wqe;
+	uint16_t wqe_opcode;
+	int ret;
+
+	/* This ensures that at least one lock request is active for this
+	 * STag. We don't need to know exactly which one; this just ensures
+	 * that we don't accept a random LOCK Response. */
+	rdmap = (struct rdmap_lockresp_packet *)orig->rdmap;
+	ret = usiw_send_wqe_queue_lookup(&qp->sq, usiw_wr_lock,
+			rte_be_to_cpu_32(rdmap->req_id), &wqe);
+	if (ret < 0 || !wqe || wqe->opcode != usiw_wr_lock) {
+		RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> Unexpected lock response!\n",
+			qp->shm_qp->dev_id, qp->shm_qp->qp_id);
+		do_rdmap_terminate(qp, orig, rdmap_error_opcode_unexpected);
+		return;
+	} else if (!DDP_GET_L(rdmap->untagged.head.ddp_flags)) {
+		RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> Lock response not single segment!\n",
+			qp->shm_qp->dev_id, qp->shm_qp->qp_id);
+		do_rdmap_terminate(qp, orig,
+				rdmap_error_remote_stream_catastrophic);
+		return;
+	}
+
+	if (wqe->iov_count) {
+		rte_memcpy(wqe->iov[0].iov_base, &rdmap->status,
+				sizeof(rdmap->status));
+	}
+
+	binheap_insert(qp->remote_ep.recv_rresp_last_psn, orig->psn);
+}	/* process_lock_response */
 
 
 static void
@@ -2361,6 +2526,12 @@ process_data_packet(struct usiw_qp *qp, struct rte_mbuf *mbuf)
 			case rdmap_opcode_atomic_response:
 				process_atomic_response(qp, &ctx);
 				break;
+			case rdmap_opcode_lock_request:
+				process_lock_request(qp, &ctx);
+				break;
+			case rdmap_opcode_lock_response:
+				process_lock_response(qp, &ctx);
+				break;
 			default:
 				do_rdmap_terminate(qp, &ctx,
 						rdmap_error_opcode_unexpected);
@@ -2390,6 +2561,9 @@ progress_send_wqe(struct usiw_qp *qp, struct usiw_send_wqe *wqe)
 		break;
 	case usiw_wr_atomic:
 		do_rdmap_atomic(qp, wqe);
+		break;
+	case usiw_wr_lock:
+		do_rdmap_lock(qp, wqe);
 		break;
 	}
 } /* progress_send_wqe */
