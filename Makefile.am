@@ -161,6 +161,22 @@ src_kvstore_client_kvstore_client_CPPFLAGS = -I$(srcdir)/include -I$(srcdir)/src
 src_kvstore_client_kvstore_client_LDFLAGS = $(LDFLAGS) $(DPDK_LDFLAGS)
 src_kvstore_client_kvstore_client_LDADD = src/liburdma/liburdma.la $(DPDK_LIBS) -lm
 
+bin_PROGRAMS += src/examples/locking_demo_server
+src_examples_locking_demo_server_SOURCES = \
+	src/examples/locking_demo_server.c
+src_examples_locking_demo_server_CFLAGS = $(DPDK_CFLAGS)
+src_examples_locking_demo_server_CPPFLAGS = -I$(srcdir)/include -I$(srcdir)/src/util -I$(srcdir)/src/liburdma $(CPPFLAGS) $(DPDK_CPPFLAGS)
+src_examples_locking_demo_server_LDFLAGS = $(LDFLAGS) $(DPDK_LDFLAGS)
+src_examples_locking_demo_server_LDADD = src/liburdma/liburdma.la $(DPDK_LIBS) -lm
+
+bin_PROGRAMS += src/examples/locking_demo_client
+src_examples_locking_demo_client_SOURCES = \
+	src/examples/locking_demo_client.c
+src_examples_locking_demo_client_CFLAGS = $(DPDK_CFLAGS)
+src_examples_locking_demo_client_CPPFLAGS = -I$(srcdir)/include -I$(srcdir)/src/util -I$(srcdir)/src/liburdma $(CPPFLAGS) $(DPDK_CPPFLAGS)
+src_examples_locking_demo_client_LDFLAGS = $(LDFLAGS) $(DPDK_LDFLAGS)
+src_examples_locking_demo_client_LDADD = src/liburdma/liburdma.la $(DPDK_LIBS) -lm
+
 check_PROGRAMS = tests/binheap tests/list_test
 tests_binheap_SOURCES = tests/binheap.c \
 	src/util/binheap.c \

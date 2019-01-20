@@ -375,7 +375,7 @@ int
 urdma_remote_lock(struct ibv_qp *ib_qp, void *local_addr,
 		  uint64_t remote_addr, uint32_t rkey, void *context)
 {
-	return post_urdma_remote_lock_op(ib_qp, local_addr, remote_addr, rkey,
+	return urdma_post_remote_lock_op(ib_qp, local_addr, remote_addr, rkey,
 					 context, rdmap_lock_lock);
 } /* urdma_remote_lock */
 
@@ -385,7 +385,7 @@ int
 urdma_remote_unlock(struct ibv_qp *ib_qp, void *local_addr,
 		  uint64_t remote_addr, uint32_t rkey, void *context)
 {
-	return post_urdma_remote_lock_op(ib_qp, local_addr, remote_addr, rkey,
+	return urdma_post_remote_lock_op(ib_qp, local_addr, remote_addr, rkey,
 					 context, rdmap_lock_unlock);
 } /* urdma_remote_unlock */
 
