@@ -1358,6 +1358,10 @@ do_qp_unlock(struct usiw_qp *qp, struct rdma_qp_lock *target)
 {
 	if (target->qpn != qp->ib_qp.qp_num || !target->lock) {
 		/* TERMINATE */
+		RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> UNLOCK failure: not locked or held by different QP\n",
+				qp->shm_qp->dev_id, qp->shm_qp->qp_id);
+		do_rdmap_terminate(qp, NULL,
+				rdmap_error_remote_stream_catastrophic);
 		return false;
 	}
 	target->lock = 0;
