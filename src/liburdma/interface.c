@@ -1535,7 +1535,7 @@ respond_lock(struct usiw_qp *qp, struct read_atomic_response_state *readresp)
 				sendmsg, dgram_length);
 		new_rdmap->untagged.head.ddp_flags = DDP_V1_UNTAGGED_LAST_DF;
 		new_rdmap->untagged.head.rdmap_info = RDMAP_V1
-			| rdmap_opcode_atomic_response;
+			| rdmap_opcode_lock_response;
 		new_rdmap->untagged.head.sink_stag
 			= rte_cpu_to_be_32(readresp->sink_stag);
 		new_rdmap->untagged.qn
