@@ -40,25 +40,23 @@
 static const char *server = "127.0.0.1";
 static const char *port = "7471";
 
-static struct rdma_cm_id *listen_id;
-static struct ibv_mr *mr, *send_mr;
-static int send_flags;
 static uint8_t lock_storage[8];
-static struct ibv_mr *lock_mr;
 static uint8_t recv_msg[16];
 
-static struct lock_announce_message {
+struct lock_announce_message {
 	uint64_t lock_addr;
 	uint32_t lock_rkey;
-} lock_msg;
+};
 
 static void *agent_thread(void *arg)
 {
 	struct rdma_cm_id *id = arg;
+	struct lock_announce_message lock_msg;
 	struct ibv_qp_init_attr init_attr;
 	struct ibv_qp_attr qp_attr;
+	struct ibv_mr *lock_mr, *send_mr, *recv_mr;
 	struct ibv_wc wc;
-	int ret;
+	int send_flags, ret;
 
 	memset(&qp_attr, 0, sizeof qp_attr);
 	memset(&init_attr, 0, sizeof init_attr);
@@ -74,11 +72,19 @@ static void *agent_thread(void *arg)
 		printf("rdma_server: device doesn't support IBV_SEND_INLINE, "
 		       "using sge sends\n");
 
-	mr = rdma_reg_msgs(id, recv_msg, 16);
-	if (!mr) {
+	lock_msg.lock_addr = (uintptr_t)&lock_storage;
+	lock_mr = rdma_reg_write(id, &lock_storage, sizeof(lock_storage));
+	if (!lock_mr) {
+		perror("rdma_reg_write");
+		goto out_destroy_accept_ep;
+	}
+	lock_msg.lock_rkey = lock_mr->rkey;
+
+	recv_mr = rdma_reg_msgs(id, recv_msg, 16);
+	if (!recv_mr) {
 		ret = -1;
 		perror("rdma_reg_msgs for recv_msg");
-		goto out_destroy_accept_ep;
+		goto out_dereg_lock;
 	}
 	if ((send_flags & IBV_SEND_INLINE) == 0) {
 		send_mr = rdma_reg_msgs(id, &lock_msg, 16);
@@ -89,7 +95,7 @@ static void *agent_thread(void *arg)
 		}
 	}
 
-	ret = rdma_post_recv(id, NULL, recv_msg, 16, mr);
+	ret = rdma_post_recv(id, NULL, recv_msg, 16, recv_mr);
 	if (ret) {
 		perror("rdma_post_recv");
 		goto out_dereg_send;
@@ -121,7 +127,9 @@ out_dereg_send:
 	if ((send_flags & IBV_SEND_INLINE) == 0)
 		rdma_dereg_mr(send_mr);
 out_dereg_recv:
-	rdma_dereg_mr(mr);
+	rdma_dereg_mr(recv_mr);
+out_dereg_lock:
+	rdma_dereg_mr(lock_mr);
 out_destroy_accept_ep:
 	rdma_destroy_ep(id);
 
@@ -132,7 +140,7 @@ static int run(void)
 {
 	struct rdma_addrinfo hints, *res;
 	struct ibv_qp_init_attr init_attr;
-	struct rdma_cm_id *id;
+	struct rdma_cm_id *id, *listen_id;
 	pthread_attr_t thread_attr;
 	pthread_t tid;
 	int ret;
@@ -157,14 +165,6 @@ static int run(void)
 		goto out_free_addrinfo;
 	}
 
-	lock_msg.lock_addr = (uintptr_t)&lock_storage;
-	lock_mr = rdma_reg_write(listen_id, &lock_storage, sizeof(lock_storage));
-	if (!lock_mr) {
-		perror("rdma_reg_write");
-		goto out_free_addrinfo;
-	}
-	lock_msg.lock_rkey = lock_mr->rkey;
-
 	ret = rdma_listen(listen_id, 0);
 	if (ret) {
 		perror("rdma_listen");
@@ -180,7 +180,8 @@ static int run(void)
 			perror("rdma_get_request");
 			goto out_destroy_listen_ep;
 		}
-		if (pthread_create(&tid, &thread_attr, &agent_thread, NULL) != 0) {
+		printf("got connection request\n");
+		if (pthread_create(&tid, &thread_attr, &agent_thread, id) != 0) {
 			fprintf(stderr, "pthread create failed\n");
 			rdma_destroy_id(id);
 			goto out_destroy_listen_ep;
