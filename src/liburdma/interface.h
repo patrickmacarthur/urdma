@@ -297,6 +297,7 @@ struct read_atomic_response_state {
 		} atomic;
 		struct {
 			unsigned int opcode;
+			uint32_t req_id;
 			bool done;
 		} lock;
 	};

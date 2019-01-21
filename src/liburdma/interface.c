@@ -1543,6 +1543,7 @@ respond_lock(struct usiw_qp *qp, struct read_atomic_response_state *readresp)
 		new_rdmap->untagged.msn
 			= rte_cpu_to_be_32(qp->readresp_head_msn++);
 		new_rdmap->status = rte_cpu_to_be_32(0);
+		new_rdmap->req_id = readresp->lock.req_id;
 
 		(void)send_ddp_segment(qp, sendmsg, readresp,
 				NULL, 0);
@@ -1553,7 +1554,7 @@ respond_lock(struct usiw_qp *qp, struct read_atomic_response_state *readresp)
 	} else {
 		return 0;
 	}
-} /* respond_atomic */
+} /* respond_lock */
 
 
 static int
@@ -1854,6 +1855,7 @@ process_lock_request(struct usiw_qp *qp, struct packet_context *orig)
 	readresp->type = lock_response;
 	readresp->vaddr = mr->mr.addr;
 	readresp->lock.opcode = rte_be_to_cpu_32(rdmap->opcode);
+	readresp->lock.req_id = rdmap->req_id;
 	readresp->lock.done = false;
 	readresp->sink_stag = rdmap->untagged.head.sink_stag;
 	readresp->sink_ep = orig->src_ep;
