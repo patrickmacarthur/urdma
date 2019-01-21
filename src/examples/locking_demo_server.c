@@ -115,7 +115,9 @@ static void *agent_thread(void *arg)
 		goto out_disconnect;
 	}
 
-	while ((ret = rdma_get_recv_comp(id, &wc)) == 0);
+	do {
+		while ((ret = rdma_get_recv_comp(id, &wc)) == 0);
+	} while (ret >= 0);
 	if (ret < 0) {
 		perror("rdma_get_recv_comp");
 		goto out_disconnect;
