@@ -131,6 +131,14 @@ static void *client_1_thread(void *arg)
 		perror("rdma_get_send_comp");
 		goto out_disconnect;
 	}
+	if (wc.status != IBV_WC_SUCCESS) {
+		fprintf(stderr, "Client 1 Got unexpected wc status %x not 0\n",
+				wc.status);
+	}
+	if (wc.opcode != 255) {
+		fprintf(stderr, "Client 1 Got unexpected wc opcode %d not 255\n",
+				wc.opcode);
+	}
 
 	pthread_mutex_lock(&state_mutex);
 	printf("Client 1 holds lock\n");
@@ -150,6 +158,14 @@ static void *client_1_thread(void *arg)
 	if (ret < 0) {
 		perror("rdma_get_send_comp");
 		goto out_disconnect;
+	}
+	if (wc.status != IBV_WC_SUCCESS) {
+		fprintf(stderr, "Client 1 Got unexpected wc status %x not 0\n",
+				wc.status);
+	}
+	if (wc.opcode != 255) {
+		fprintf(stderr, "Client 1 Got unexpected wc opcode %d not 255\n",
+				wc.opcode);
 	}
 
 	printf("client 1 done\n");
@@ -233,6 +249,14 @@ static void *client_2_thread(void *arg)
 		perror("rdma_get_send_comp");
 		goto out_disconnect;
 	}
+	if (wc.status != IBV_WC_SUCCESS) {
+		fprintf(stderr, "Client 2 Got unexpected wc status %x not 0\n",
+				wc.status);
+	}
+	if (wc.opcode != 255) {
+		fprintf(stderr, "Client 2 Got unexpected wc opcode %d not 255\n",
+				wc.opcode);
+	}
 	printf("Client 2 holds lock\n");
 
 	ret = urdma_remote_unlock(id->qp, &lock_status,
@@ -242,6 +266,14 @@ static void *client_2_thread(void *arg)
 	if (ret < 0) {
 		perror("rdma_get_send_comp");
 		goto out_disconnect;
+	}
+	if (wc.status != IBV_WC_SUCCESS) {
+		fprintf(stderr, "Client 2 Got unexpected wc status %x not 0\n",
+				wc.status);
+	}
+	if (wc.opcode != 255) {
+		fprintf(stderr, "Client 2 Got unexpected wc opcode %d not 255\n",
+				wc.opcode);
 	}
 
 	printf("client 2 done\n");
