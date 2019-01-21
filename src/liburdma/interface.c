@@ -2675,6 +2675,7 @@ progress_qp(struct usiw_qp *qp)
 					break;
 				case usiw_wr_read:
 				case usiw_wr_atomic:
+				case usiw_wr_lock:
 					send_wqe->msn = send_wqe->remote_ep
 							->next_read_msn++;
 					break;
