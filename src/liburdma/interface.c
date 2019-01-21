@@ -1892,7 +1892,8 @@ find_first_rdma_read_atomic(struct usiw_qp *qp)
 	struct usiw_send_wqe *lptr, *next;
 	list_for_each_safe(&qp->sq.active_head, lptr, next, active) {
 		if (lptr->opcode == usiw_wr_read
-				|| lptr->opcode == usiw_wr_atomic) {
+				|| lptr->opcode == usiw_wr_atomic
+				|| lptr->opcode == usiw_wr_lock) {
 			return lptr;
 		}
 	}
