@@ -360,6 +360,7 @@ urdma_post_remote_lock_op(struct ibv_qp *ib_qp, void *local_addr,
 	wqe->remote_ep = ee;
 	wqe->state = SEND_WQE_INIT;
 	wqe->atomic_opcode = opcode;
+	wqe->flags = usiw_send_signaled;
 	wqe->msn = 0; /* will be assigned at send time */
 	wqe->local_stag = 0;
 	wqe->bytes_sent = 0;
