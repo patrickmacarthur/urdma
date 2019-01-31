@@ -121,6 +121,7 @@ static void *client_1_thread(void *arg)
 
 	pthread_mutex_lock(&state_mutex);
 	printf("Client 1 requests lock\n");
+	fflush(stdout);
 	pthread_mutex_unlock(&state_mutex);
 	ret = urdma_remote_lock(id->qp, &lock_status,
 				lock_msg.lock_addr,
@@ -142,11 +143,13 @@ static void *client_1_thread(void *arg)
 
 	pthread_mutex_lock(&state_mutex);
 	printf("Client 1 holds lock\n");
+	fflush(stdout);
 	state = state_c1_locked;
 	pthread_cond_signal(&state_cond);
 	while (state != state_c2_locking)
 		pthread_cond_wait(&state_cond, &state_mutex);
 	printf("Client 1 releasing lock\n");
+	fflush(stdout);
 	ret = urdma_remote_unlock(id->qp, &lock_status,
 				  lock_msg.lock_addr, lock_msg.lock_rkey,
 				  NULL);
@@ -169,6 +172,7 @@ static void *client_1_thread(void *arg)
 	}
 
 	printf("client 1 done\n");
+	fflush(stdout);
 
 
 out_disconnect:
@@ -230,9 +234,11 @@ static void *client_2_thread(void *arg)
 
 	pthread_mutex_lock(&state_mutex);
 	printf("Client 2 ready\n");
+	fflush(stdout);
 	while (state != state_c1_locked)
 		pthread_cond_wait(&state_cond, &state_mutex);
 	printf("Client 2 requesting lock\n");
+	fflush(stdout);
 	pthread_mutex_unlock(&state_mutex);
 
 	ret = urdma_remote_lock(id->qp, &lock_status,
@@ -240,6 +246,7 @@ static void *client_2_thread(void *arg)
 
 	pthread_mutex_lock(&state_mutex);
 	printf("Client 2 requested lock\n");
+	fflush(stdout);
 	state = state_c2_locking;
 	pthread_cond_signal(&state_cond);
 	pthread_mutex_unlock(&state_mutex);
@@ -258,6 +265,7 @@ static void *client_2_thread(void *arg)
 				wc.opcode);
 	}
 	printf("Client 2 holds lock\n");
+	fflush(stdout);
 
 	ret = urdma_remote_unlock(id->qp, &lock_status,
 				  lock_msg.lock_addr, lock_msg.lock_rkey,
