@@ -705,6 +705,8 @@ finish_post_cqe(struct usiw_cq *cq, struct usiw_wc *cqe)
 	struct usiw_context *ctx;
 	ssize_t ret;
 
+	RTE_LOG(NOTICE, USER1, "Post CQE with opcode %d\n",
+			cqe->opcode);
 	ret = rte_ring_enqueue(cq->cqe_ring, cqe);
 	assert(ret == 0);
 	ctx = usiw_get_context(cq->ib_cq.context);
@@ -1343,6 +1345,8 @@ static bool
 do_qp_lock(struct usiw_qp *qp, struct rdma_qp_lock *target)
 {
 	if (!target->lock) {
+		RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> grabbing LOCK\n",
+				qp->shm_qp->dev_id, qp->shm_qp->qp_id);
 		target->lock = 1;
 		target->qpn = qp->ib_qp.qp_num;
 		return true;
@@ -1367,6 +1371,8 @@ do_qp_unlock(struct usiw_qp *qp, struct rdma_qp_lock *target)
 	target->lock = 0;
 	/* The next waiter will try to regain the lock when the loop goes
 	 * around the next time. */
+	RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> UNLOCK done\n",
+				qp->shm_qp->dev_id, qp->shm_qp->qp_id);
 	return true;
 }	/* do_qp_unlock */
 
@@ -1550,6 +1556,8 @@ respond_lock(struct usiw_qp *qp, struct read_atomic_response_state *readresp)
 
 		/* Signal that this is done */
 		readresp->active = false;
+		RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> sent LOCK response\n",
+				qp->shm_qp->dev_id, qp->shm_qp->qp_id);
 		return 1;
 	} else {
 		return 0;
@@ -2001,6 +2009,8 @@ process_lock_response(struct usiw_qp *qp, struct packet_context *orig)
 	}
 
 	binheap_insert(qp->remote_ep.recv_rresp_last_psn, orig->psn);
+	RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> Got lock response!\n",
+		qp->shm_qp->dev_id, qp->shm_qp->qp_id);
 }	/* process_lock_response */
 
 
@@ -2648,6 +2658,9 @@ progress_qp(struct usiw_qp *qp)
 			 * try_complete_wqe() ensures that we do not complete an
 			 * RDMA READ request out of order. */
 			send_wqe = find_first_rdma_read_atomic(qp);
+			RTE_LOG(NOTICE, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> pulled read/atomic/lock request last for %p off queue\n",
+					qp->shm_qp->dev_id, qp->shm_qp->qp_id,
+					(void *)send_wqe);
 			if (!(WARN_ONCE(!send_wqe,
 					"No RDMA READ request pending\n"))) {
 				send_wqe->state = SEND_WQE_COMPLETE;
