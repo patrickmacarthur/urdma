@@ -54,6 +54,8 @@ void process_wc(struct ConnState *cs, struct ibv_wc *wc)
 
 void run()
 {
+	struct ibv_mr *recv_mr;
+	union MessageBuf recv_bufs[32];
 	struct rdma_addrinfo hints, *rai;
 	struct ibv_qp_init_attr attr;
 	struct rdma_conn_param cparam;
@@ -75,6 +77,23 @@ void run()
 	ret = rdma_create_ep(&id, rai, NULL, &attr);
 	if (ret)
 		std::terminate();
+
+	recv_mr = ibv_reg_mr(id->pd, recv_bufs,
+				 sizeof(recv_bufs), 0);
+	if (!recv_mr) {
+		rdma_reject(id, NULL, 0);
+		return;
+	}
+
+	for (int i = 0; i < 32; i++) {
+		ret = rdma_post_recv(id, recv_bufs[i].buf,
+				     recv_bufs[i].buf,
+				     sizeof(recv_bufs[i]), recv_mr);
+		if (ret) {
+			rdma_reject(id, NULL, 0);
+			return;
+		}
+	}
 
 	memset(&cparam, 0, sizeof(cparam));
 	cparam.initiator_depth = 2;
