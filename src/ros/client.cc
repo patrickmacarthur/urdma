@@ -10,6 +10,7 @@
 #include <iomanip>
 #include <iostream>
 
+#include <boost/endian/conversion.hpp>
 #include <boost/format.hpp>
 
 #include <rdma/rdma_cma.h>
@@ -17,6 +18,8 @@
 
 #include "ros.h"
 
+using boost::endian::big_to_native;
+using boost::endian::native_to_big_inplace;
 using boost::format;
 
 static const int CACHE_LINE_SIZE = 64;
@@ -24,7 +27,7 @@ static const int CACHE_LINE_SIZE = 64;
 void process_announce(struct ConnState *cs, struct AnnounceMessage *msg)
 {
 	std::cout << format("announce from hostid %x\n")
-			% ntohl(msg->hdr.hostid);
+			% big_to_native(msg->hdr.hostid);
 }
 
 void process_gethdrreq(struct ConnState *cs, struct GetHdrRequest *msg)
@@ -34,9 +37,9 @@ void process_gethdrreq(struct ConnState *cs, struct GetHdrRequest *msg)
 
 void process_gethdrresp(struct ConnState *cs, struct GetHdrResponse *msg)
 {
-	std::cout << "gethdr response for object " << msg->uid
-		  << " remote addr " << msg->addr
-		  << " rkey " << msg->rkey << "\n";
+	std::cout << format("gethdr response for object %x remote addr %x rkey %x\n")
+			% big_to_native(msg->uid)
+			% big_to_native(msg->addr) % big_to_native(msg->rkey);
 }
 
 void process_wc(struct ConnState *cs, struct ibv_wc *wc)
@@ -115,9 +118,9 @@ void run(char *host)
 		std::terminate();
 	gethdr_req_msg->hdr.version = 0;
 	gethdr_req_msg->hdr.opcode = OPCODE_GETHDR_REQ;
-	gethdr_req_msg->hdr.reserved2 = 0;
-	gethdr_req_msg->hdr.hostid = 0;
-	gethdr_req_msg->uid = 1;
+	native_to_big_inplace(gethdr_req_msg->hdr.reserved2 = 0);
+	native_to_big_inplace(gethdr_req_msg->hdr.hostid = 0);
+	native_to_big_inplace(gethdr_req_msg->uid = 1);
 
 	struct ibv_mr *mr = ibv_reg_mr(id->pd, gethdr_req_msg,
 				       sizeof(*gethdr_req_msg), 0);

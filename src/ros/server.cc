@@ -9,6 +9,9 @@
 #include <exception>
 #include <iostream>
 
+#include <boost/endian/conversion.hpp>
+#include <boost/format.hpp>
+
 #include <netdb.h>
 
 #include <rdma/rdma_cma.h>
@@ -16,9 +19,13 @@
 
 #include "ros.h"
 
+using boost::endian::big_to_native;
+using boost::endian::native_to_big_inplace;
+using boost::format;
+
 static const int CACHE_LINE_SIZE = 64;
 
-static long hostid = 0x12345678;
+static unsigned long hostid = 0x12345678;
 
 static_assert(sizeof(struct MessageHeader) == 8, "incorrect size for MessageHeader");
 static_assert(offsetof(struct AnnounceMessage, hdr.reserved2) == 2, "wrong offset for reserved2");
@@ -37,7 +44,8 @@ void process_announce(struct ConnState *cs, struct AnnounceMessage *msg)
 
 void process_gethdrreq(struct ConnState *cs, struct GetHdrRequest *msg)
 {
-	std::cout << "gethdr request for object " << msg->uid << "\n";
+	std::cout << format("gethdr request for object %x\n")
+			% big_to_native(msg->uid);
 }
 
 void process_gethdrresp(struct ConnState *cs, struct GetHdrResponse *msg)
@@ -95,8 +103,8 @@ void handle_connection(struct ConnState *cs)
 		return;
 	cs->announce->hdr.version = 0;
 	cs->announce->hdr.opcode = OPCODE_ANNOUNCE;
-	cs->announce->hdr.reserved2 = 0;
-	cs->announce->hdr.hostid = htonl(hostid);
+	native_to_big_inplace(cs->announce->hdr.reserved2 = 0);
+	native_to_big_inplace(cs->announce->hdr.hostid = hostid);
 
 	cs->announce_mr = ibv_reg_mr(cs->id->pd, cs->announce,
 				     sizeof(*cs->announce), 0);
