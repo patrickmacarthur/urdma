@@ -18,6 +18,8 @@
 
 static const int CACHE_LINE_SIZE = 64;
 
+static long hostid = 0x12345678;
+
 static_assert(sizeof(struct MessageHeader) == 8, "incorrect size for MessageHeader");
 static_assert(offsetof(struct AnnounceMessage, hdr.reserved2) == 2, "wrong offset for reserved2");
 static_assert(offsetof(struct AnnounceMessage, reserved28) == 28, "wrong offset for reserved28");
@@ -94,7 +96,7 @@ void handle_connection(struct ConnState *cs)
 	cs->announce->hdr.version = 0;
 	cs->announce->hdr.opcode = OPCODE_ANNOUNCE;
 	cs->announce->hdr.reserved2 = 0;
-	cs->announce->hdr.hostid = 0x12345678;
+	cs->announce->hdr.hostid = htonl(hostid);
 
 	cs->announce_mr = ibv_reg_mr(cs->id->pd, cs->announce,
 				     sizeof(*cs->announce), 0);

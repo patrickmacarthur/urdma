@@ -7,19 +7,24 @@
 #include <cstdlib>
 
 #include <exception>
+#include <iomanip>
 #include <iostream>
+
+#include <boost/format.hpp>
 
 #include <rdma/rdma_cma.h>
 #include <rdma/rdma_verbs.h>
 
 #include "ros.h"
 
+using boost::format;
+
 static const int CACHE_LINE_SIZE = 64;
 
 void process_announce(struct ConnState *cs, struct AnnounceMessage *msg)
 {
-	std::cout << "announce from hostid " << msg->hdr.hostid
-		  << "\n";
+	std::cout << format("announce from hostid %x\n")
+			% ntohl(msg->hdr.hostid);
 }
 
 void process_gethdrreq(struct ConnState *cs, struct GetHdrRequest *msg)
