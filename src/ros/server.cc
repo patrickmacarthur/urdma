@@ -177,6 +177,7 @@ void run(char *host)
 		exit(EXIT_FAILURE);
 
 	struct sockaddr *sa = rdma_get_local_addr(listen_id);
+	assert(sa != NULL);
 	char userhost[20];
 	char userport[20];
 	ret = getnameinfo(sa, sizeof(struct sockaddr_in6), userhost, 20, userport, 20, 0);
