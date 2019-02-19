@@ -66,7 +66,7 @@ void run(char *host)
 	hints.ai_flags = 0;
 	hints.ai_port_space = RDMA_PS_TCP;
 
-	ret = rdma_getaddrinfo("localhost", "9001", &hints, &rai);
+	ret = rdma_getaddrinfo(host, "9001", &hints, &rai);
 	if (ret)
 		std::terminate();
 
