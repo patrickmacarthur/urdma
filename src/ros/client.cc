@@ -120,8 +120,10 @@ void run()
 	ret = rdma_post_send(id, gethdr_req_msg, gethdr_req_msg,
 			     sizeof(*gethdr_req_msg),
 			     mr, IBV_SEND_SIGNALED);
-	if (ret)
-		std::terminate();
+	if (ret) {
+		std::cerr << "rdma post send returned " << ret << " errno " << errno << "\n";
+		abort();
+	}
 
 	struct ibv_wc wc[32];
 	int count;
