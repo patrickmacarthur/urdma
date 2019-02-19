@@ -183,7 +183,7 @@ void run(char *host)
 	char userport[20];
 	ret = getnameinfo(sa, sizeof(struct sockaddr_in6), userhost, 20, userport, 20, 0);
 	if (ret) {
-		std::cerr << "getnameinfo " << gai_strerror(ret) << "\n";
+		std::cerr << "getnameinfo " << gai_strerror(ret) << " (" << ret << ")\n";
 		exit(EXIT_FAILURE);
 	}
 	std::cerr << "Listening on " << userhost << ":" << userport << "\n";
