@@ -151,7 +151,7 @@ struct ibv_pd *get_pd()
 
 }
 
-void run()
+void run(char *host)
 {
 	struct rdma_addrinfo hints, *rai;
 	struct rdma_cm_id *listen_id, *id;
@@ -162,7 +162,7 @@ void run()
 	hints.ai_flags = RAI_PASSIVE;
 	hints.ai_port_space = RDMA_PS_TCP;
 
-	ret = rdma_getaddrinfo("mundilfari-iw", "9001", &hints, &rai);
+	ret = rdma_getaddrinfo(host, "9001", &hints, &rai);
 	if (ret)
 		exit(EXIT_FAILURE);
 
@@ -179,7 +179,11 @@ void run()
 	struct sockaddr *sa = rdma_get_local_addr(listen_id);
 	char userhost[20];
 	char userport[20];
-	getnameinfo(sa, sizeof(struct sockaddr_in6), userhost, 20, userport, 20, 0);
+	ret = getnameinfo(sa, sizeof(struct sockaddr_in6), userhost, 20, userport, 20, 0);
+	if (ret) {
+		std::cerr << "getnameinfo " << gai_strerror(ret) << "\n";
+		exit(EXIT_FAILURE);
+	}
 	std::cerr << "Listening on " << userhost << ":" << userport << "\n";
 
 	while (1) {
@@ -200,6 +204,6 @@ void run()
 
 int main(int argc, char *argv[])
 {
-	run();
+	run(argv[1]);
 	exit(EXIT_SUCCESS);
 }
