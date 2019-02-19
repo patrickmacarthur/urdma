@@ -99,8 +99,10 @@ void run(char *host)
 	cparam.initiator_depth = 2;
 	cparam.responder_resources = 2;
 	ret = rdma_connect(id, &cparam);
-	if (ret)
+	if (ret) {
+		std::cerr << "rdma_connect returned " << ret << " errno " << errno << "\n";
 		std::terminate();
+	}
 
 	struct GetHdrRequest *gethdr_req_msg = reinterpret_cast<struct GetHdrRequest *>(
 			aligned_alloc(CACHE_LINE_SIZE, sizeof(*gethdr_req_msg)));
