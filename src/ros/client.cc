@@ -96,8 +96,8 @@ void run(char *host)
 	}
 
 	memset(&cparam, 0, sizeof(cparam));
-	cparam.initiator_depth = 2;
-	cparam.responder_resources = 2;
+	cparam.initiator_depth = 1;
+	cparam.responder_resources = 1;
 	ret = rdma_connect(id, &cparam);
 	if (ret) {
 		std::cerr << "rdma_connect returned " << ret << " errno " << errno << "\n";
