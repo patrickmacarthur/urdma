@@ -52,7 +52,7 @@ void process_wc(struct ConnState *cs, struct ibv_wc *wc)
 	}
 }
 
-void run()
+void run(char *host)
 {
 	struct ibv_mr *recv_mr;
 	union MessageBuf recv_bufs[32];
@@ -136,6 +136,6 @@ void run()
 
 int main(int argc, char *argv[])
 {
-	run();
+	run(argv[1]);
 	exit(EXIT_SUCCESS);
 }
