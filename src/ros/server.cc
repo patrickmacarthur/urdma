@@ -112,7 +112,7 @@ void handle_connection(struct ConnState *cs)
 
 	struct ibv_wc wc[32];
 	int count;
-	while ((count = ibv_poll_cq(cs->id->recv_cq, 32, wc)) != 0) {
+	while ((count = ibv_poll_cq(cs->id->recv_cq, 32, wc)) >= 0) {
 		for (int i = 0; i < count; i++) {
 			process_wc(cs, &wc[i]);
 		}
