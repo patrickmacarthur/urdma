@@ -166,7 +166,12 @@ void run(char *host)
 	if (ret)
 		exit(EXIT_FAILURE);
 
-	ret = rdma_create_ep(&listen_id, rai, get_pd(), NULL);
+	struct ibv_qp_init_attr attr;
+	memset(&attr, 0, sizeof(attr));
+	attr.qp_type = IBV_QPT_RC;
+	attr.cap.max_send_wr = 64;
+	attr.cap.max_recv_wr = 64;
+	ret = rdma_create_ep(&listen_id, rai, get_pd(), &attr);
 	if (ret)
 		exit(EXIT_FAILURE);
 
