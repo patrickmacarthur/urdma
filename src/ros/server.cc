@@ -162,7 +162,7 @@ void run()
 	hints.ai_flags = RAI_PASSIVE;
 	hints.ai_port_space = RDMA_PS_TCP;
 
-	ret = rdma_getaddrinfo("localhost", "9001", &hints, &rai);
+	ret = rdma_getaddrinfo("mundilfari-iw", "9001", &hints, &rai);
 	if (ret)
 		exit(EXIT_FAILURE);
 
