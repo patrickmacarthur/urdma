@@ -184,9 +184,10 @@ void run(char *host)
 	struct sockaddr *sa = rdma_get_local_addr(listen_id);
 	assert(sa != NULL);
 	std::cerr << "sa is " << (void *)sa << "\n\n";
-	char userhost[2000];
-	char userport[2000];
-	ret = getnameinfo(sa, sizeof(struct sockaddr_in6), userhost, 2000, userport, 2000, 0);
+	char userhost[256];
+	char userport[10];
+	ret = getnameinfo(sa, sizeof(struct sockaddr_in6), userhost, 256, userport, 10,
+			NI_NUMERICSERV);
 	if (ret) {
 		std::cerr << "getnameinfo " << gai_strerror(ret) << " (" << ret << ")\n";
 		exit(EXIT_FAILURE);
