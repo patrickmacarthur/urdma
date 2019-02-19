@@ -9,6 +9,8 @@
 #include <exception>
 #include <iostream>
 
+#include <netdb.h>
+
 #include <rdma/rdma_cma.h>
 #include <rdma/rdma_verbs.h>
 
@@ -174,10 +176,18 @@ void run()
 	if (ret)
 		exit(EXIT_FAILURE);
 
+	struct sockaddr *sa = rdma_get_local_addr(listen_id);
+	char userhost[20];
+	char userport[20];
+	getnameinfo(sa, sizeof(struct sockaddr_in6), userhost, 20, userport, 20, 0);
+	std::cerr << "Listening on " << userhost << ":" << userport << "\n";
+
 	while (1) {
 		ret = rdma_get_request(listen_id, &id);
 		if (ret)
 			exit(EXIT_FAILURE);
+
+		std::cerr << "Got connection!\n";
 
 		cs = new ConnState;
 		cs->id = id;
