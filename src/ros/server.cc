@@ -92,6 +92,11 @@ void process_gethdrreq(struct ConnState *cs, struct GetHdrRequest *msg)
 	native_to_big_inplace(cs->send_buf->gethdrresp.addr = (uintptr_t)root_obj);
 	native_to_big_inplace(cs->send_buf->gethdrresp.rkey = root_obj_mr->rkey);
 	native_to_big_inplace(cs->send_buf->gethdrresp.reserved36 = 0);
+
+	int ret = rdma_post_send(cs->id, cs,
+			     reinterpret_cast<void *>(cs->send_buf),
+			     sizeof(*cs->send_buf), NULL,
+			     IBV_SEND_SIGNALED|IBV_SEND_INLINE);
 }
 
 void process_gethdrresp(struct ConnState *cs, struct GetHdrResponse *msg)

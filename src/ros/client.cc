@@ -153,6 +153,7 @@ void run(char *host)
 		std::cerr << "rdma post send returned " << ret << " errno " << errno << "\n";
 		abort();
 	}
+	std::cerr << "packet sent\n";
 
 	struct ibv_wc wc[32];
 	int count;
