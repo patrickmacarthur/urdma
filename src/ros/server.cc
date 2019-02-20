@@ -170,8 +170,12 @@ void handle_connection(struct ConnState *cs)
 	int count;
 	while ((count = ibv_poll_cq(cs->id->recv_cq, 32, wc)) >= 0) {
 		for (int i = 0; i < count; i++) {
-			if (wc->status == IBV_WC_SUCCESS && wc->opcode == IBV_WC_RECV)
+			if (wc->status == IBV_WC_SUCCESS)
 				process_wc(cs, &wc[i]);
+			else {
+				std::cerr << "OH NO\n";
+				return;
+			}
 		}
 	}
 }
