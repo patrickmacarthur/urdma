@@ -27,6 +27,40 @@ static const int CACHE_LINE_SIZE = 64;
 
 static unsigned long hostid = 0x12345678;
 
+struct RDMALock {
+	char lock[8];
+};
+
+struct RDMAObjectID {
+	uint64_t nodeid;
+	uint64_t uid;
+};
+
+struct ROSObjectHeader {
+	struct RDMALock lock;
+	uint64_t uid;
+	uint32_t replica_hostid1;
+	uint32_t replica_hostid2;
+	uint32_t refcnt;
+	uint32_t version;
+};
+
+struct TreeRoot {
+	struct ROSObjectHeader objhdr;
+	uint64_t rootnode_uid;
+};
+struct TreeRoot *root_obj;
+struct ibv_mr *root_obj_mr;
+
+struct ConnState {
+	struct rdma_cm_id *id;
+	struct AnnounceMessage *announce;
+	struct ibv_mr *announce_mr;
+	struct ibv_mr *recv_mr;
+	union MessageBuf *send_buf;
+	union MessageBuf recv_bufs[32];
+};
+
 static_assert(sizeof(struct MessageHeader) == 8, "incorrect size for MessageHeader");
 static_assert(offsetof(struct AnnounceMessage, hdr.reserved2) == 2, "wrong offset for reserved2");
 static_assert(offsetof(struct AnnounceMessage, reserved28) == 28, "wrong offset for reserved28");
@@ -46,6 +80,18 @@ void process_gethdrreq(struct ConnState *cs, struct GetHdrRequest *msg)
 {
 	std::cout << format("gethdr request for object %x\n")
 			% big_to_native(msg->uid);
+	cs->send_buf = reinterpret_cast<union MessageBuf *>(
+			aligned_alloc(CACHE_LINE_SIZE, sizeof(*cs->send_buf)));
+	cs->send_buf->gethdrresp.hdr.version = 1;
+	cs->send_buf->hdr.version = 0;
+	cs->send_buf->hdr.opcode = OPCODE_GETHDR_RESP;
+	native_to_big_inplace(cs->send_buf->gethdrresp.hdr.reserved2 = 0);
+	native_to_big_inplace(cs->send_buf->gethdrresp.hdr.hostid = hostid);
+	native_to_big_inplace(cs->send_buf->gethdrresp.replica_hostid1 = 0);
+	native_to_big_inplace(cs->send_buf->gethdrresp.replica_hostid2 = 0);
+	native_to_big_inplace(cs->send_buf->gethdrresp.addr = (uintptr_t)root_obj);
+	native_to_big_inplace(cs->send_buf->gethdrresp.rkey = root_obj_mr->rkey);
+	native_to_big_inplace(cs->send_buf->gethdrresp.reserved36 = 0);
 }
 
 void process_gethdrresp(struct ConnState *cs, struct GetHdrResponse *msg)
@@ -124,7 +170,8 @@ void handle_connection(struct ConnState *cs)
 	int count;
 	while ((count = ibv_poll_cq(cs->id->recv_cq, 32, wc)) >= 0) {
 		for (int i = 0; i < count; i++) {
-			process_wc(cs, &wc[i]);
+			if (wc->status == IBV_WC_SUCCESS && wc->opcode == IBV_WC_RECV)
+				process_wc(cs, &wc[i]);
 		}
 	}
 }

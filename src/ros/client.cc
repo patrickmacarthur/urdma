@@ -24,10 +24,29 @@ using boost::format;
 
 static const int CACHE_LINE_SIZE = 64;
 
+struct ROSRemoteObject {
+	uint64_t uid;
+	uint64_t remote_addr;
+	uint32_t rkey;
+};
+
+struct ConnState {
+	struct rdma_cm_id *id;
+	struct ibv_mr *send_mr;
+	struct ibv_mr *recv_mr;
+	unsigned long server_hostid;
+	struct ROSRemoteObject root;
+	union MessageBuf *nextsend;
+	union MessageBuf recv_bufs[32];
+};
+
 void process_announce(struct ConnState *cs, struct AnnounceMessage *msg)
 {
-	std::cout << format("announce from hostid %x\n")
-			% big_to_native(msg->hdr.hostid);
+	cs->server_hostid = big_to_native(msg->hdr.hostid);
+	cs->root.uid = big_to_native(msg->root_uid);
+	cs->root.remote_addr = big_to_native(msg->root_addr);
+	cs->root.rkey = big_to_native(msg->root_rkey);
+	std::cout << format("announce from hostid %x\n") % cs->server_hostid;
 }
 
 void process_gethdrreq(struct ConnState *cs, struct GetHdrRequest *msg)
@@ -62,13 +81,13 @@ void process_wc(struct ConnState *cs, struct ibv_wc *wc)
 
 void run(char *host)
 {
-	struct ibv_mr *recv_mr;
-	union MessageBuf recv_bufs[32];
+	struct ConnState *cs;
 	struct rdma_addrinfo hints, *rai;
 	struct ibv_qp_init_attr attr;
 	struct rdma_conn_param cparam;
-	struct rdma_cm_id *id;
 	int ret;
+
+	cs = new ConnState;
 
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_flags = 0;
@@ -82,23 +101,23 @@ void run(char *host)
 	attr.qp_type = IBV_QPT_RC;
 	attr.cap.max_send_wr = 64;
 	attr.cap.max_recv_wr = 64;
-	ret = rdma_create_ep(&id, rai, NULL, &attr);
+	ret = rdma_create_ep(&cs->id, rai, NULL, &attr);
 	if (ret)
 		std::terminate();
 
-	recv_mr = ibv_reg_mr(id->pd, recv_bufs,
-				 sizeof(recv_bufs), 0);
-	if (!recv_mr) {
-		rdma_reject(id, NULL, 0);
+	cs->recv_mr = ibv_reg_mr(cs->id->pd, cs->recv_bufs,
+				 sizeof(cs->recv_bufs), 0);
+	if (!cs->recv_mr) {
+		rdma_reject(cs->id, NULL, 0);
 		return;
 	}
 
 	for (int i = 0; i < 32; i++) {
-		ret = rdma_post_recv(id, recv_bufs[i].buf,
-				     recv_bufs[i].buf,
-				     sizeof(recv_bufs[i]), recv_mr);
+		ret = rdma_post_recv(cs->id, cs->recv_bufs[i].buf,
+				     cs->recv_bufs[i].buf,
+				     sizeof(cs->recv_bufs[i]), cs->recv_mr);
 		if (ret) {
-			rdma_reject(id, NULL, 0);
+			rdma_reject(cs->id, NULL, 0);
 			return;
 		}
 	}
@@ -106,30 +125,30 @@ void run(char *host)
 	memset(&cparam, 0, sizeof(cparam));
 	cparam.initiator_depth = 1;
 	cparam.responder_resources = 1;
-	ret = rdma_connect(id, &cparam);
+	ret = rdma_connect(cs->id, &cparam);
 	if (ret) {
 		std::cerr << "rdma_connect returned " << ret << " errno " << errno << "\n";
 		std::terminate();
 	}
 
-	struct GetHdrRequest *gethdr_req_msg = reinterpret_cast<struct GetHdrRequest *>(
-			aligned_alloc(CACHE_LINE_SIZE, sizeof(*gethdr_req_msg)));
-	if (!gethdr_req_msg)
+	cs->nextsend = reinterpret_cast<union MessageBuf *>(
+			aligned_alloc(CACHE_LINE_SIZE, sizeof(*cs->nextsend)));
+	if (!cs->nextsend)
 		std::terminate();
-	gethdr_req_msg->hdr.version = 0;
-	gethdr_req_msg->hdr.opcode = OPCODE_GETHDR_REQ;
-	native_to_big_inplace(gethdr_req_msg->hdr.reserved2 = 0);
-	native_to_big_inplace(gethdr_req_msg->hdr.hostid = 0);
-	native_to_big_inplace(gethdr_req_msg->uid = 1);
+	cs->nextsend->hdr.version = 0;
+	cs->nextsend->hdr.opcode = OPCODE_GETHDR_REQ;
+	native_to_big_inplace(cs->nextsend->gethdrreq.hdr.reserved2 = 0);
+	native_to_big_inplace(cs->nextsend->gethdrreq.hdr.hostid = 0);
+	native_to_big_inplace(cs->nextsend->gethdrreq.uid = 1);
 
-	struct ibv_mr *mr = ibv_reg_mr(id->pd, gethdr_req_msg,
-				       sizeof(*gethdr_req_msg), 0);
-	if (!mr)
+	cs->send_mr = ibv_reg_mr(cs->id->pd, cs->nextsend,
+				       sizeof(*cs->nextsend), 0);
+	if (!cs->send_mr)
 		std::terminate();
 
-	ret = rdma_post_send(id, gethdr_req_msg, gethdr_req_msg,
-			     sizeof(*gethdr_req_msg),
-			     mr, IBV_SEND_SIGNALED);
+	ret = rdma_post_send(cs->id, cs->nextsend, cs->nextsend,
+			     sizeof(*cs->nextsend),
+			     cs->send_mr, IBV_SEND_SIGNALED);
 	if (ret) {
 		std::cerr << "rdma post send returned " << ret << " errno " << errno << "\n";
 		abort();
@@ -137,9 +156,9 @@ void run(char *host)
 
 	struct ibv_wc wc[32];
 	int count;
-	while ((count = ibv_poll_cq(id->recv_cq, 32, wc)) >= 0) {
+	while ((count = ibv_poll_cq(cs->id->recv_cq, 32, wc)) >= 0) {
 		for (int i = 0; i < count; i++) {
-			process_wc(NULL, &wc[i]);
+			process_wc(cs, &wc[i]);
 		}
 	}
 }

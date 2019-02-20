@@ -11,31 +11,6 @@
 extern "C" {
 #endif
 
-struct RDMALock {
-	char lock[8];
-};
-
-struct RDMAObjectID {
-	uint64_t nodeid;
-	uint64_t uid;
-};
-
-struct ROSObjectHeader {
-	struct RDMALock lock;
-	uint64_t uid;
-	uint32_t replica_hostid1;
-	uint32_t replica_hostid2;
-	uint32_t refcnt;
-	uint32_t version;
-};
-
-struct TreeRoot {
-	struct ROSObjectHeader objhdr;
-	uint64_t rootnode_uid;
-};
-struct TreeRoot *root_obj;
-struct ibv_mr *root_obj_mr;
-
 enum {
 	OPCODE_ANNOUNCE,
 	OPCODE_GETHDR_REQ,
@@ -78,14 +53,6 @@ union MessageBuf {
 	struct GetHdrRequest gethdrreq;
 	struct GetHdrResponse gethdrresp;
 	char buf[40];
-};
-
-struct ConnState {
-	struct rdma_cm_id *id;
-	struct AnnounceMessage *announce;
-	struct ibv_mr *announce_mr;
-	struct ibv_mr *recv_mr;
-	union MessageBuf recv_bufs[32];
 };
 
 #ifdef __cplusplus
