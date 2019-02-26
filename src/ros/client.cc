@@ -138,7 +138,9 @@ void run(const char *cluster_id_str)
 	int ret;
 
 	std::istringstream iss;
-	iss >> std::hex >> cluster_id;
+	iss.setf(std::ios_base::hex, std::ios_base::basefield);
+	iss >> cluster_id;
+	std::cerr << format("cluster id is %u\n") % cluster_id;
 
 	host = get_first_announce(cluster_id);
 

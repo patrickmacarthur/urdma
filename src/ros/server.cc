@@ -288,6 +288,7 @@ void run(char *host)
 		exit(EXIT_FAILURE);
 	}
 	std::cerr << "Listening on " << userhost << ":" << userport << "\n";
+	std::cerr << format("cluster id is %u\n") % cluster_id;
 
 	announcemsg = reinterpret_cast<struct AnnounceMessage *>(
 			aligned_alloc(CACHE_LINE_SIZE, sizeof(*announcemsg)));
@@ -300,6 +301,8 @@ void run(char *host)
 	native_to_big_inplace(announcemsg->rdma_ipv4_addr
 		= (reinterpret_cast<struct sockaddr_in *>(sa)->sin_addr.s_addr));
 	native_to_big_inplace(announcemsg->cluster_id = cluster_id);
+
+	std::thread mcast_thread{mcast_responder};
 
 	while (1) {
 		ret = rdma_get_request(listen_id, &id);
