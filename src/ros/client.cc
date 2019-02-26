@@ -9,6 +9,7 @@
 #include <exception>
 #include <iomanip>
 #include <iostream>
+#include <type_traits>
 
 #include <boost/endian/conversion.hpp>
 #include <boost/format.hpp>
@@ -39,6 +40,16 @@ struct ConnState {
 	union MessageBuf *nextsend;
 	union MessageBuf recv_bufs[32];
 };
+
+#define CHECK_ERRNO(x) \
+	if ((x) < 0) { \
+		throw std::system_error(errno, std::system_category()); \
+	}
+
+#define CHECK_PTR_ERRNO(x) \
+	if (x == nullptr) { \
+		throw std::system_error(errno, std::system_category()); \
+	}
 
 void process_announce(struct ConnState *cs, struct AnnounceMessage *msg)
 {
@@ -85,6 +96,9 @@ void run(char *host)
 	struct rdma_addrinfo hints, *rai;
 	struct ibv_qp_init_attr attr;
 	struct rdma_conn_param cparam;
+	struct ibv_cq *cq;
+	struct ibv_wc wc;
+	void *cq_context;
 	int ret;
 
 	cs = new ConnState;
@@ -93,19 +107,13 @@ void run(char *host)
 	hints.ai_flags = 0;
 	hints.ai_port_space = RDMA_PS_TCP;
 
-	ret = rdma_getaddrinfo(host, "9001", &hints, &rai);
-	if (ret) {
-		throw std::system_error(errno, std::system_category());
-	}
+	CHECK_ERRNO(rdma_getaddrinfo(host, "9001", &hints, &rai));
 
 	memset(&attr, 0, sizeof(attr));
 	attr.qp_type = IBV_QPT_RC;
 	attr.cap.max_send_wr = 64;
 	attr.cap.max_recv_wr = 64;
-	ret = rdma_create_ep(&cs->id, rai, NULL, &attr);
-	if (ret) {
-		throw std::system_error(errno, std::system_category());
-	}
+	CHECK_ERRNO(rdma_create_ep(&cs->id, rai, NULL, &attr));
 
 	cs->recv_mr = ibv_reg_mr(cs->id->pd, cs->recv_bufs,
 				 sizeof(cs->recv_bufs), 0);
@@ -127,15 +135,14 @@ void run(char *host)
 	memset(&cparam, 0, sizeof(cparam));
 	cparam.initiator_depth = 1;
 	cparam.responder_resources = 1;
-	ret = rdma_connect(cs->id, &cparam);
-	if (ret) {
-		throw std::system_error(errno, std::system_category());
-	}
+	CHECK_ERRNO(rdma_connect(cs->id, &cparam));
+
+	CHECK_ERRNO(rdma_get_recv_comp(cs->id, &wc));
+	process_wc(cs, &wc);
 
 	cs->nextsend = reinterpret_cast<union MessageBuf *>(
 			aligned_alloc(CACHE_LINE_SIZE, sizeof(*cs->nextsend)));
-	if (!cs->nextsend)
-		throw std::system_error(errno, std::system_category());
+	CHECK_PTR_ERRNO(cs->nextsend);
 	cs->nextsend->hdr.version = 0;
 	cs->nextsend->hdr.opcode = OPCODE_GETHDR_REQ;
 	native_to_big_inplace(cs->nextsend->gethdrreq.hdr.reserved2 = 0);
@@ -143,30 +150,16 @@ void run(char *host)
 	native_to_big_inplace(cs->nextsend->gethdrreq.uid = 1);
 
 	cs->send_mr = ibv_reg_mr(cs->id->pd, cs->nextsend,
-				       sizeof(*cs->nextsend), 0);
-	if (!cs->send_mr)
-		throw std::system_error(errno, std::system_category());
+				 sizeof(*cs->nextsend), 0);
+	CHECK_PTR_ERRNO(cs->send_mr);
 
-	ret = rdma_post_send(cs->id, cs->nextsend, cs->nextsend,
-			     sizeof(*cs->nextsend),
-			     cs->send_mr, IBV_SEND_SIGNALED);
-	if (ret) {
-		throw std::system_error(errno, std::system_category());
-	}
+	CHECK_ERRNO(rdma_post_send(cs->id, cs->nextsend, cs->nextsend,
+				   sizeof(*cs->nextsend),
+				   cs->send_mr, IBV_SEND_SIGNALED));
 	std::cerr << "packet sent\n";
 
-	struct ibv_wc wc[32];
-	int count;
-	while ((count = ibv_poll_cq(cs->id->recv_cq, 32, wc)) >= 0) {
-		for (int i = 0; i < count; i++) {
-			if (wc[i].status == IBV_WC_SUCCESS) {
-				process_wc(cs, &wc[i]);
-			} else {
-				std::cerr << format("completion failed: %s\n")
-					% ibv_wc_status_str(wc[i].status);
-			}
-		}
-	}
+	CHECK_ERRNO(rdma_get_recv_comp(cs->id, &wc));
+	process_wc(cs, &wc);
 }
 
 int main(int argc, char *argv[])
