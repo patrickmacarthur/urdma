@@ -105,6 +105,7 @@ std::string get_first_announce(uint64_t cluster_id)
 	sendmsg.hdr.opcode = OPCODE_QUERY_SERVERS;
 	native_to_big_inplace(sendmsg.hdr.reserved2 = 0);
 	native_to_big_inplace(sendmsg.hdr.hostid = 0);
+	native_to_big_inplace(sendmsg.reserved8 = 0);
 	native_to_big_inplace(sendmsg.cluster_id = cluster_id);
 
 	CHECK_ERRNO(send(mcfd, &sendmsg, sizeof(sendmsg), 0));
