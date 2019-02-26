@@ -72,5 +72,4 @@ sudo modprobe urdma
 
 systemctl --user start urdmad
 sleep 5
-timeout 60 ${TESTAPP} "$@"
-systemctl --user stop urdmad
+systemctl --user status urdmad

@@ -96,15 +96,6 @@ exec 3<${our_tmpdir}/client_fifo
 read client_ret <&3
 exec 3<&-
 
-rsync -a ${SERVER_NODE}:log/ ${HOME}/log/${SERVER_NODE}
-rsync -a ${CLIENT_NODE}:log/ ${HOME}/log/${CLIENT_NODE}
-
-printf "Output is in the following log files:\n"
-printf " %s/log/%s/%s/%s.log\n" \
-	"${HOME}" "${SERVER_NODE}" "${SERVER_APP}" "${LOGID}"
-printf " %s/log/%s/%s/%s.log\n" \
-	"${HOME}" "${CLIENT_NODE}" "${CLIENT_APP}" "${LOGID}"
-
 if [[ ${server_ret} -ne 0 ]]; then
 	exit ${server_ret}
 elif [[ ${client_ret} -ne 0 ]]; then
