@@ -135,11 +135,14 @@ void run(const char *cluster_id_str)
 	uint64_t cluster_id;
 	void *cq_context;
 	std::string host;
+	char *endp;
 	int ret;
 
-	std::istringstream iss;
-	iss.setf(std::ios_base::hex, std::ios_base::basefield);
-	iss >> cluster_id;
+	errno = 0;
+	cluster_id = strtoull(cluster_id_str, &endp, 16);
+	if (errno || *endp != '\0') {
+		throw format("bad cluster id \"%s\"") % cluster_id;
+	}
 	std::cerr << format("cluster id is %u\n") % cluster_id;
 
 	host = get_first_announce(cluster_id);
