@@ -8,6 +8,7 @@
 
 #include <exception>
 #include <iostream>
+#include <thread>
 
 #include <boost/endian/conversion.hpp>
 #include <boost/format.hpp>
@@ -18,13 +19,13 @@
 #include <rdma/rdma_verbs.h>
 
 #include "ros.h"
+#include "gai_category.h"
 
 using boost::endian::big_to_native;
 using boost::endian::native_to_big_inplace;
 using boost::format;
 
-static const int CACHE_LINE_SIZE = 64;
-
+static uint64_t cluster_id = 0x1122334455667788;
 static unsigned long hostid = 0x12345678;
 
 struct RDMALock {
@@ -52,6 +53,18 @@ struct TreeRoot {
 struct TreeRoot *root_obj;
 struct ibv_mr *root_obj_mr;
 
+static_assert(sizeof(struct MessageHeader) == 8, "incorrect size for MessageHeader");
+static_assert(offsetof(struct AnnounceMessage, hdr.reserved2) == 2, "wrong offset for reserved2");
+static_assert(offsetof(struct AnnounceMessage, reserved44) == 44, "wrong offset for reserved44");
+static_assert(sizeof(struct AnnounceMessage) == 48, "incorrect size for LockAnnounceMessage");
+static_assert(offsetof(struct GetHdrRequest, hdr.reserved2) == 2, "wrong offset for reserved2");
+static_assert(sizeof(struct GetHdrRequest) == 16, "incorrect size for GetHdrRequest");
+static_assert(offsetof(struct GetHdrResponse, hdr.reserved2) == 2, "wrong offset for reserved2");
+static_assert(offsetof(struct GetHdrResponse, reserved36) == 36, "wrong offset for reserved36");
+static_assert(sizeof(struct GetHdrResponse) == 40, "incorrect size for GetHdrResponse");
+
+namespace {
+
 struct ConnState {
 	struct rdma_cm_id *id;
 	struct AnnounceMessage *announce;
@@ -61,15 +74,7 @@ struct ConnState {
 	union MessageBuf recv_bufs[32];
 };
 
-static_assert(sizeof(struct MessageHeader) == 8, "incorrect size for MessageHeader");
-static_assert(offsetof(struct AnnounceMessage, hdr.reserved2) == 2, "wrong offset for reserved2");
-static_assert(offsetof(struct AnnounceMessage, reserved28) == 28, "wrong offset for reserved28");
-static_assert(sizeof(struct AnnounceMessage) == 32, "incorrect size for LockAnnounceMessage");
-static_assert(offsetof(struct GetHdrRequest, hdr.reserved2) == 2, "wrong offset for reserved2");
-static_assert(sizeof(struct GetHdrRequest) == 16, "incorrect size for GetHdrRequest");
-static_assert(offsetof(struct GetHdrResponse, hdr.reserved2) == 2, "wrong offset for reserved2");
-static_assert(offsetof(struct GetHdrResponse, reserved36) == 36, "wrong offset for reserved36");
-static_assert(sizeof(struct GetHdrResponse) == 40, "incorrect size for GetHdrResponse");
+struct AnnounceMessage *announcemsg;
 
 void process_announce(struct ConnState *cs, struct AnnounceMessage *msg)
 {
@@ -148,24 +153,12 @@ void handle_connection(struct ConnState *cs)
 	if (ret)
 		return;
 
-	cs->announce = reinterpret_cast<struct AnnounceMessage *>(
-			aligned_alloc(CACHE_LINE_SIZE, sizeof(*cs->announce)));
-	if (!cs->announce)
-		return;
-	cs->announce->hdr.version = 0;
-	cs->announce->hdr.opcode = OPCODE_ANNOUNCE;
-	native_to_big_inplace(cs->announce->hdr.reserved2 = 0);
-	native_to_big_inplace(cs->announce->hdr.hostid = hostid);
-
-	cs->announce_mr = ibv_reg_mr(cs->id->pd, cs->announce,
-				     sizeof(*cs->announce), 0);
-	if (!cs->announce_mr) {
-		free(cs->announce);
-		return;
-	}
+	cs->announce_mr = ibv_reg_mr(cs->id->pd, announcemsg,
+				     sizeof(*announcemsg), 0);
+	CHECK_PTR_ERRNO(cs->announce_mr);
 
 	ret = rdma_post_send(cs->id, cs,
-			     reinterpret_cast<void *>(cs->announce),
+			     reinterpret_cast<void *>(announcemsg),
 			     sizeof(*cs->announce), cs->announce_mr,
 			     IBV_SEND_SIGNALED);
 	if (ret)
@@ -184,12 +177,6 @@ void handle_connection(struct ConnState *cs)
 			}
 		}
 	}
-}
-
-void *conn_thread(void *arg)
-{
-	handle_connection(reinterpret_cast<struct ConnState *>(arg));
-	return NULL;
 }
 
 void init_tree_root(struct ibv_pd *pd)
@@ -215,7 +202,47 @@ struct ibv_pd *get_pd()
 	struct ibv_pd *pd = ibv_alloc_pd(*dev);
 	rdma_free_devices(dev);
 	return pd;
+}
 
+void mcast_responder()
+{
+	struct addrinfo hints, *ai;
+	ssize_t ret;
+
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_family = AF_INET;
+	hints.ai_socktype = SOCK_DGRAM;
+	ret = getaddrinfo(ros_mcast_addr, ros_mcast_port, &hints, &ai);
+	if (ret) {
+		throw std::system_error(ret, gai_category());
+	}
+
+	int mcfd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+	CHECK_ERRNO(mcfd);
+	CHECK_ERRNO(connect(mcfd, ai->ai_addr, ai->ai_addrlen));
+
+	while (1) {
+		union MessageBuf recvbuf;
+		struct sockaddr_storage sastore;
+		auto sa = reinterpret_cast<struct sockaddr *>(&sastore);
+		socklen_t salen = sizeof(sa);
+
+		ret = recvfrom(mcfd, &recvbuf, sizeof(recvbuf), 0,
+			       sa, &salen);
+		CHECK_ERRNO(ret);
+
+		if (recvbuf.hdr.version != 0
+				|| recvbuf.hdr.opcode != OPCODE_QUERY_SERVERS
+				|| big_to_native(recvbuf.qsmsg.cluster_id) != cluster_id) {
+			/* Ignore announce messages from other servers or
+			 * otherwise invalid messages */
+			continue;
+		}
+
+		ret = sendto(mcfd, announcemsg, sizeof(*announcemsg), 0,
+			     sa, salen);
+		CHECK_ERRNO(ret);
+	}
 }
 
 void run(char *host)
@@ -223,6 +250,7 @@ void run(char *host)
 	struct rdma_addrinfo hints, *rai;
 	struct rdma_cm_id *listen_id, *id;
 	struct ConnState *cs;
+	std::vector<std::thread> client_threads;
 	int ret;
 
 	memset(&hints, 0, sizeof(hints));
@@ -261,6 +289,18 @@ void run(char *host)
 	}
 	std::cerr << "Listening on " << userhost << ":" << userport << "\n";
 
+	announcemsg = reinterpret_cast<struct AnnounceMessage *>(
+			aligned_alloc(CACHE_LINE_SIZE, sizeof(*announcemsg)));
+	if (!announcemsg)
+		return;
+	announcemsg->hdr.version = 0;
+	announcemsg->hdr.opcode = OPCODE_ANNOUNCE;
+	native_to_big_inplace(announcemsg->hdr.reserved2 = 0);
+	native_to_big_inplace(announcemsg->hdr.hostid = hostid);
+	native_to_big_inplace(announcemsg->rdma_ipv4_addr
+		= (reinterpret_cast<struct sockaddr_in *>(sa)->sin_addr.s_addr));
+	native_to_big_inplace(announcemsg->cluster_id = cluster_id);
+
 	while (1) {
 		ret = rdma_get_request(listen_id, &id);
 		if (ret)
@@ -270,11 +310,14 @@ void run(char *host)
 
 		cs = new ConnState;
 		cs->id = id;
-		pthread_t tid;
-		ret = pthread_create(&tid, NULL, conn_thread, cs);
-		if (ret)
-			exit(EXIT_FAILURE);
+		std::thread t{handle_connection, cs};
+		client_threads.push_back(std::move(t));
 	}
+	for (auto &t: client_threads) {
+		t.join();
+	}
+}
+
 }
 
 int main(int argc, char *argv[])

@@ -14,16 +14,19 @@
 #include <boost/endian/conversion.hpp>
 #include <boost/format.hpp>
 
+#include <arpa/inet.h>
+#include <netdb.h>
 #include <rdma/rdma_cma.h>
 #include <rdma/rdma_verbs.h>
 
 #include "ros.h"
+#include "gai_category.h"
 
 using boost::endian::big_to_native;
 using boost::endian::native_to_big_inplace;
 using boost::format;
 
-static const int CACHE_LINE_SIZE = 64;
+namespace {
 
 struct ROSRemoteObject {
 	uint64_t uid;
@@ -40,16 +43,6 @@ struct ConnState {
 	union MessageBuf *nextsend;
 	union MessageBuf recv_bufs[32];
 };
-
-#define CHECK_ERRNO(x) \
-	if ((x) < 0) { \
-		throw std::system_error(errno, std::system_category()); \
-	}
-
-#define CHECK_PTR_ERRNO(x) \
-	if (x == nullptr) { \
-		throw std::system_error(errno, std::system_category()); \
-	}
 
 void process_announce(struct ConnState *cs, struct AnnounceMessage *msg)
 {
@@ -90,7 +83,47 @@ void process_wc(struct ConnState *cs, struct ibv_wc *wc)
 	}
 }
 
-void run(char *host)
+std::string get_first_announce(uint64_t cluster_id)
+{
+	struct addrinfo hints, *ai;
+	ssize_t ret;
+
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_family = AF_INET;
+	hints.ai_socktype = SOCK_DGRAM;
+	ret = getaddrinfo(ros_mcast_addr, ros_mcast_port, &hints, &ai);
+	if (ret) {
+		throw std::system_error(ret, gai_category());
+	}
+
+	int mcfd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+	CHECK_ERRNO(mcfd);
+	CHECK_ERRNO(connect(mcfd, ai->ai_addr, ai->ai_addrlen));
+
+	struct QueryServersMessage sendmsg;
+	sendmsg.hdr.version = 0;
+	sendmsg.hdr.opcode = OPCODE_QUERY_SERVERS;
+	native_to_big_inplace(sendmsg.hdr.reserved2 = 0);
+	native_to_big_inplace(sendmsg.hdr.hostid = 0);
+	native_to_big_inplace(sendmsg.cluster_id = cluster_id);
+
+	CHECK_ERRNO(send(mcfd, &sendmsg, sizeof(sendmsg), 0));
+
+	union MessageBuf recvmsg;
+	do {
+		ret = recv(mcfd, &recvmsg, sizeof(recvmsg), 0);
+		CHECK_ERRNO(ret);
+	} while (recvmsg.hdr.version != 0
+			|| recvmsg.hdr.opcode != OPCODE_ANNOUNCE
+			|| big_to_native(recvmsg.announce.cluster_id) != cluster_id);
+
+	struct in_addr inaddr{recvmsg.announce.rdma_ipv4_addr};
+	char addrbuf[INET_ADDRSTRLEN];
+	CHECK_PTR_ERRNO(inet_ntop(AF_INET, &inaddr, addrbuf, INET_ADDRSTRLEN));
+	return addrbuf;
+}
+
+void run(const char *cluster_id_str)
 {
 	struct ConnState *cs;
 	struct rdma_addrinfo hints, *rai;
@@ -98,8 +131,15 @@ void run(char *host)
 	struct rdma_conn_param cparam;
 	struct ibv_cq *cq;
 	struct ibv_wc wc;
+	uint64_t cluster_id;
 	void *cq_context;
+	std::string host;
 	int ret;
+
+	std::istringstream iss;
+	iss >> std::hex >> cluster_id;
+
+	host = get_first_announce(cluster_id);
 
 	cs = new ConnState;
 
@@ -107,7 +147,7 @@ void run(char *host)
 	hints.ai_flags = 0;
 	hints.ai_port_space = RDMA_PS_TCP;
 
-	CHECK_ERRNO(rdma_getaddrinfo(host, "9001", &hints, &rai));
+	CHECK_ERRNO(rdma_getaddrinfo(host.c_str(), "9001", &hints, &rai));
 
 	memset(&attr, 0, sizeof(attr));
 	attr.qp_type = IBV_QPT_RC;
@@ -160,6 +200,8 @@ void run(char *host)
 
 	CHECK_ERRNO(rdma_get_recv_comp(cs->id, &wc));
 	process_wc(cs, &wc);
+}
+
 }
 
 int main(int argc, char *argv[])
