@@ -73,7 +73,7 @@ static_assert(sizeof(struct GetHdrResponse) == 40, "incorrect size for GetHdrRes
 
 void process_announce(struct ConnState *cs, struct AnnounceMessage *msg)
 {
-	std::terminate();
+	throw "not implemented";
 }
 
 void process_gethdrreq(struct ConnState *cs, struct GetHdrRequest *msg)
@@ -101,7 +101,7 @@ void process_gethdrreq(struct ConnState *cs, struct GetHdrRequest *msg)
 
 void process_gethdrresp(struct ConnState *cs, struct GetHdrResponse *msg)
 {
-	std::terminate();
+	throw "not implemented";
 }
 
 void process_wc(struct ConnState *cs, struct ibv_wc *wc)
@@ -175,10 +175,11 @@ void handle_connection(struct ConnState *cs)
 	int count;
 	while ((count = ibv_poll_cq(cs->id->recv_cq, 32, wc)) >= 0) {
 		for (int i = 0; i < count; i++) {
-			if (wc->status == IBV_WC_SUCCESS)
+			if (wc[i].status == IBV_WC_SUCCESS) {
 				process_wc(cs, &wc[i]);
-			else {
-				std::cerr << "OH NO\n";
+			} else {
+				std::cerr << format("completion failed: %s\n")
+					% ibv_wc_status_str(wc[i].status);
 				return;
 			}
 		}
@@ -196,7 +197,7 @@ void init_tree_root(struct ibv_pd *pd)
 	root_obj = reinterpret_cast<struct TreeRoot *>(
 			aligned_alloc(CACHE_LINE_SIZE, sizeof(*root_obj)));
 	if (!root_obj)
-		std::terminate();
+		throw std::system_error(errno, std::system_category());
 	memset(root_obj, 0, sizeof(*root_obj));
 	root_obj->objhdr.uid = 1;
 
@@ -204,7 +205,7 @@ void init_tree_root(struct ibv_pd *pd)
 				 IBV_ACCESS_LOCAL_WRITE|IBV_ACCESS_REMOTE_READ
 				 |IBV_ACCESS_REMOTE_WRITE);
 	if (!root_obj_mr) {
-		std::terminate();
+		throw std::system_error(errno, std::system_category());
 	}
 }
 

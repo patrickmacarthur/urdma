@@ -51,7 +51,7 @@ void process_announce(struct ConnState *cs, struct AnnounceMessage *msg)
 
 void process_gethdrreq(struct ConnState *cs, struct GetHdrRequest *msg)
 {
-	std::terminate();
+	throw "not implemented";
 }
 
 void process_gethdrresp(struct ConnState *cs, struct GetHdrResponse *msg)
@@ -94,16 +94,18 @@ void run(char *host)
 	hints.ai_port_space = RDMA_PS_TCP;
 
 	ret = rdma_getaddrinfo(host, "9001", &hints, &rai);
-	if (ret)
-		std::terminate();
+	if (ret) {
+		throw std::system_error(errno, std::system_category());
+	}
 
 	memset(&attr, 0, sizeof(attr));
 	attr.qp_type = IBV_QPT_RC;
 	attr.cap.max_send_wr = 64;
 	attr.cap.max_recv_wr = 64;
 	ret = rdma_create_ep(&cs->id, rai, NULL, &attr);
-	if (ret)
-		std::terminate();
+	if (ret) {
+		throw std::system_error(errno, std::system_category());
+	}
 
 	cs->recv_mr = ibv_reg_mr(cs->id->pd, cs->recv_bufs,
 				 sizeof(cs->recv_bufs), 0);
@@ -127,14 +129,13 @@ void run(char *host)
 	cparam.responder_resources = 1;
 	ret = rdma_connect(cs->id, &cparam);
 	if (ret) {
-		std::cerr << "rdma_connect returned " << ret << " errno " << errno << "\n";
-		std::terminate();
+		throw std::system_error(errno, std::system_category());
 	}
 
 	cs->nextsend = reinterpret_cast<union MessageBuf *>(
 			aligned_alloc(CACHE_LINE_SIZE, sizeof(*cs->nextsend)));
 	if (!cs->nextsend)
-		std::terminate();
+		throw std::system_error(errno, std::system_category());
 	cs->nextsend->hdr.version = 0;
 	cs->nextsend->hdr.opcode = OPCODE_GETHDR_REQ;
 	native_to_big_inplace(cs->nextsend->gethdrreq.hdr.reserved2 = 0);
@@ -144,14 +145,13 @@ void run(char *host)
 	cs->send_mr = ibv_reg_mr(cs->id->pd, cs->nextsend,
 				       sizeof(*cs->nextsend), 0);
 	if (!cs->send_mr)
-		std::terminate();
+		throw std::system_error(errno, std::system_category());
 
 	ret = rdma_post_send(cs->id, cs->nextsend, cs->nextsend,
 			     sizeof(*cs->nextsend),
 			     cs->send_mr, IBV_SEND_SIGNALED);
 	if (ret) {
-		std::cerr << "rdma post send returned " << ret << " errno " << errno << "\n";
-		abort();
+		throw std::system_error(errno, std::system_category());
 	}
 	std::cerr << "packet sent\n";
 
@@ -159,7 +159,12 @@ void run(char *host)
 	int count;
 	while ((count = ibv_poll_cq(cs->id->recv_cq, 32, wc)) >= 0) {
 		for (int i = 0; i < count; i++) {
-			process_wc(cs, &wc[i]);
+			if (wc[i].status == IBV_WC_SUCCESS) {
+				process_wc(cs, &wc[i]);
+			} else {
+				std::cerr << format("completion failed: %s\n")
+					% ibv_wc_status_str(wc[i].status);
+			}
 		}
 	}
 }
