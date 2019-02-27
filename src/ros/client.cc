@@ -98,7 +98,28 @@ std::string get_first_announce(uint64_t cluster_id)
 
 	int mcfd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
 	CHECK_ERRNO(mcfd);
+	int val = 0;
+	CHECK_ERRNO(setsockopt(mcfd, IPPROTO_IP, IP_MULTICAST_ALL,
+				&val, sizeof(val)));
+	struct ip_mreqn mreq;
+	CHECK_ERRNO(inet_pton(AF_INET, ros_mcast_addr, &mreq.imr_multiaddr));
+	mreq.imr_address = in_addr{INADDR_ANY};
+	mreq.imr_ifindex = 0;
+	CHECK_ERRNO(setsockopt(mcfd, IPPROTO_IP, IP_ADD_MEMBERSHIP,
+				&mreq, sizeof(mreq)));
 	CHECK_ERRNO(connect(mcfd, ai->ai_addr, ai->ai_addrlen));
+
+	struct sockaddr_storage localaddr_store;
+	auto localaddr = reinterpret_cast<struct sockaddr *>(&localaddr_store);
+	socklen_t localaddr_len = sizeof(localaddr_store);
+	getsockname(mcfd, localaddr, &localaddr_len);
+	char mchost[256];
+	char mcport[10];
+	ret = getnameinfo(localaddr, localaddr_len, mchost, 256, mcport, 10,
+			NI_NUMERICSERV);
+	if (ret)
+		throw std::system_error(ret, gai_category());
+	std::cerr << "Multicast socket bound to " << mchost << ":" << mcport << "\n";
 
 	struct QueryServersMessage sendmsg;
 	sendmsg.hdr.version = 0;

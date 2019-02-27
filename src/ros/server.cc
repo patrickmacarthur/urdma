@@ -13,6 +13,7 @@
 #include <boost/endian/conversion.hpp>
 #include <boost/format.hpp>
 
+#include <arpa/inet.h>
 #include <netdb.h>
 
 #include <rdma/rdma_cma.h>
@@ -204,7 +205,7 @@ struct ibv_pd *get_pd()
 	return pd;
 }
 
-void mcast_responder()
+void mcast_responder(const char *userhost)
 {
 	struct addrinfo hints, *ai;
 	ssize_t ret;
@@ -212,14 +213,24 @@ void mcast_responder()
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = AF_INET;
 	hints.ai_socktype = SOCK_DGRAM;
-	ret = getaddrinfo(ros_mcast_addr, ros_mcast_port, &hints, &ai);
+	hints.ai_flags = AI_PASSIVE;
+	ret = getaddrinfo(userhost, ros_mcast_port, &hints, &ai);
 	if (ret) {
 		throw std::system_error(ret, gai_category());
 	}
 
 	int mcfd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
 	CHECK_ERRNO(mcfd);
-	CHECK_ERRNO(connect(mcfd, ai->ai_addr, ai->ai_addrlen));
+	CHECK_ERRNO(bind(mcfd, ai->ai_addr, ai->ai_addrlen));
+	int val = 0;
+	CHECK_ERRNO(setsockopt(mcfd, IPPROTO_IP, IP_MULTICAST_ALL,
+				&val, sizeof(val)));
+	struct ip_mreqn mreq;
+	CHECK_ERRNO(inet_pton(AF_INET, ros_mcast_addr, &mreq.imr_multiaddr));
+	mreq.imr_address = ((struct sockaddr_in *)ai->ai_addr)->sin_addr;
+	mreq.imr_ifindex = 0;
+	CHECK_ERRNO(setsockopt(mcfd, IPPROTO_IP, IP_ADD_MEMBERSHIP,
+				&mreq, sizeof(mreq)));
 
 	while (1) {
 		union MessageBuf recvbuf;
@@ -278,14 +289,23 @@ void run(char *host)
 
 	struct sockaddr *sa = rdma_get_local_addr(listen_id);
 	assert(sa != NULL);
-	std::cerr << "sa is " << (void *)sa << "\n\n";
+	int salen;
+	switch (sa->sa_family) {
+	case AF_INET:
+		salen = sizeof(struct sockaddr_in);
+		break;
+	case AF_INET6:
+		salen = sizeof(struct sockaddr_in6);
+		break;
+	default:
+		throw format("unexpected sa_family %d") % sa->sa_family;
+	}
 	char userhost[256];
 	char userport[10];
 	ret = getnameinfo(sa, sizeof(struct sockaddr_in6), userhost, 256, userport, 10,
 			NI_NUMERICSERV);
 	if (ret) {
-		std::cerr << "getnameinfo " << gai_strerror(ret) << " (" << ret << ")\n";
-		exit(EXIT_FAILURE);
+		throw std::system_error(ret, gai_category());
 	}
 	std::cerr << "Listening on " << userhost << ":" << userport << "\n";
 	std::cerr << format("cluster id is %u\n") % cluster_id;
@@ -302,7 +322,7 @@ void run(char *host)
 		= (reinterpret_cast<struct sockaddr_in *>(sa)->sin_addr.s_addr));
 	native_to_big_inplace(announcemsg->cluster_id = cluster_id);
 
-	std::thread mcast_thread{mcast_responder};
+	std::thread mcast_thread{mcast_responder, userhost};
 
 	while (1) {
 		ret = rdma_get_request(listen_id, &id);
