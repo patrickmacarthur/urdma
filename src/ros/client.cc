@@ -83,7 +83,7 @@ void process_wc(struct ConnState *cs, struct ibv_wc *wc)
 	}
 }
 
-std::string get_first_announce(uint64_t cluster_id)
+std::string get_first_announce(struct sockaddr_in *local_addr, uint64_t cluster_id)
 {
 	struct addrinfo hints, *ai;
 	ssize_t ret;
@@ -98,12 +98,13 @@ std::string get_first_announce(uint64_t cluster_id)
 
 	int mcfd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
 	CHECK_ERRNO(mcfd);
+	CHECK_ERRNO(bind(mcfd, (struct sockaddr *)local_addr, sizeof(*local_addr)));
 	int val = 0;
 	CHECK_ERRNO(setsockopt(mcfd, IPPROTO_IP, IP_MULTICAST_ALL,
 				&val, sizeof(val)));
 	struct ip_mreqn mreq;
 	CHECK_ERRNO(inet_pton(AF_INET, ros_mcast_addr, &mreq.imr_multiaddr));
-	mreq.imr_address = in_addr{INADDR_ANY};
+	mreq.imr_address = local_addr->sin_addr;
 	mreq.imr_ifindex = 0;
 	CHECK_ERRNO(setsockopt(mcfd, IPPROTO_IP, IP_ADD_MEMBERSHIP,
 				&mreq, sizeof(mreq)));
@@ -145,12 +146,13 @@ std::string get_first_announce(uint64_t cluster_id)
 	return addrbuf;
 }
 
-void run(const char *cluster_id_str)
+void run(const char *local_ip, const char *cluster_id_str)
 {
 	struct ConnState *cs;
 	struct rdma_addrinfo hints, *rai;
 	struct ibv_qp_init_attr attr;
 	struct rdma_conn_param cparam;
+	struct addrinfo *ai;
 	struct ibv_cq *cq;
 	struct ibv_wc wc;
 	uint64_t cluster_id;
@@ -166,7 +168,12 @@ void run(const char *cluster_id_str)
 	}
 	std::cerr << format("cluster id is %u\n") % cluster_id;
 
-	host = get_first_announce(cluster_id);
+	ret = getaddrinfo(local_ip, NULL, NULL, &ai);
+	if (ret)
+		throw std::system_error(ret, gai_category());
+	host = get_first_announce(reinterpret_cast<struct sockaddr_in *>(ai->ai_addr),
+				  cluster_id);
+	freeaddrinfo(ai);
 
 	cs = new ConnState;
 
@@ -233,6 +240,8 @@ void run(const char *cluster_id_str)
 
 int main(int argc, char *argv[])
 {
-	run(argv[1]);
+	if (argc != 3)
+		throw "not enough arguments";
+	run(argv[1], argv[2]);
 	exit(EXIT_SUCCESS);
 }
