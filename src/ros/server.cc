@@ -214,15 +214,19 @@ void mcast_responder(const char *userhost)
 	hints.ai_family = AF_INET;
 	hints.ai_socktype = SOCK_DGRAM;
 	hints.ai_flags = AI_PASSIVE;
-	ret = getaddrinfo(userhost, ros_mcast_port, &hints, &ai);
+	ret = getaddrinfo(userhost, NULL, &hints, &ai);
 	if (ret) {
 		throw std::system_error(ret, gai_category());
 	}
 
 	int mcfd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
 	CHECK_ERRNO(mcfd);
-	CHECK_ERRNO(bind(mcfd, ai->ai_addr, ai->ai_addrlen));
-	int val = 0;
+	struct sockaddr_in any;
+	any.sin_family = AF_INET;
+	any.sin_addr = in_addr{INADDR_ANY};
+	native_to_big_inplace(any.sin_port = ros_mcast_port);
+	CHECK_ERRNO(bind(mcfd, reinterpret_cast<struct sockaddr *>(&any), sizeof(any)));
+	int val = 1;
 	CHECK_ERRNO(setsockopt(mcfd, IPPROTO_IP, IP_MULTICAST_ALL,
 				&val, sizeof(val)));
 	struct ip_mreqn mreq;
@@ -250,8 +254,12 @@ void mcast_responder(const char *userhost)
 			continue;
 		}
 
+		struct sockaddr_in multiout;
+		multiout.sin_family = AF_INET;
+		multiout.sin_addr = mreq.imr_multiaddr;
+		native_to_big_inplace(multiout.sin_port = ros_mcast_port);
 		ret = sendto(mcfd, announcemsg, sizeof(*announcemsg), 0,
-			     sa, salen);
+			     (struct sockaddr *)&multiout, sizeof(multiout));
 		CHECK_ERRNO(ret);
 	}
 }
@@ -308,7 +316,7 @@ void run(char *host)
 		throw std::system_error(ret, gai_category());
 	}
 	std::cerr << "Listening on " << userhost << ":" << userport << "\n";
-	std::cerr << format("cluster id is %u\n") % cluster_id;
+	std::cerr << format("cluster id is %x\n") % cluster_id;
 
 	announcemsg = reinterpret_cast<struct AnnounceMessage *>(
 			aligned_alloc(CACHE_LINE_SIZE, sizeof(*announcemsg)));
@@ -318,8 +326,8 @@ void run(char *host)
 	announcemsg->hdr.opcode = OPCODE_ANNOUNCE;
 	native_to_big_inplace(announcemsg->hdr.reserved2 = 0);
 	native_to_big_inplace(announcemsg->hdr.hostid = hostid);
-	native_to_big_inplace(announcemsg->rdma_ipv4_addr
-		= (reinterpret_cast<struct sockaddr_in *>(sa)->sin_addr.s_addr));
+	announcemsg->rdma_ipv4_addr
+		= (reinterpret_cast<struct sockaddr_in *>(sa)->sin_addr.s_addr);
 	native_to_big_inplace(announcemsg->cluster_id = cluster_id);
 
 	std::thread mcast_thread{mcast_responder, userhost};

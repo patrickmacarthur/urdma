@@ -12,7 +12,7 @@ extern "C" {
 #endif
 
 static const char *ros_mcast_addr = "239.255.123.45";
-static const char *ros_mcast_port = "9002";
+static int ros_mcast_port = 9002;
 
 static const int CACHE_LINE_SIZE = 64;
 

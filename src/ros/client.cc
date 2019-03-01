@@ -51,6 +51,7 @@ void process_announce(struct ConnState *cs, struct AnnounceMessage *msg)
 	cs->root.remote_addr = big_to_native(msg->root_addr);
 	cs->root.rkey = big_to_native(msg->root_rkey);
 	std::cout << format("announce from hostid %x\n") % cs->server_hostid;
+	std::cout.flush();
 }
 
 void process_gethdrreq(struct ConnState *cs, struct GetHdrRequest *msg)
@@ -63,6 +64,7 @@ void process_gethdrresp(struct ConnState *cs, struct GetHdrResponse *msg)
 	std::cout << format("gethdr response for object %x remote addr %x rkey %x\n")
 			% big_to_native(msg->uid)
 			% big_to_native(msg->addr) % big_to_native(msg->rkey);
+	std::cout.flush();
 }
 
 void process_wc(struct ConnState *cs, struct ibv_wc *wc)
@@ -91,15 +93,19 @@ std::string get_first_announce(struct sockaddr_in *local_addr, uint64_t cluster_
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = AF_INET;
 	hints.ai_socktype = SOCK_DGRAM;
-	ret = getaddrinfo(ros_mcast_addr, ros_mcast_port, &hints, &ai);
+	ret = getaddrinfo(ros_mcast_addr, "9002", &hints, &ai);
 	if (ret) {
 		throw std::system_error(ret, gai_category());
 	}
 
 	int mcfd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
 	CHECK_ERRNO(mcfd);
-	CHECK_ERRNO(bind(mcfd, (struct sockaddr *)local_addr, sizeof(*local_addr)));
-	int val = 0;
+	struct sockaddr_in any;
+	any.sin_family = AF_INET;
+	any.sin_addr = in_addr{INADDR_ANY};
+	native_to_big_inplace(any.sin_port = ros_mcast_port);
+	CHECK_ERRNO(bind(mcfd, (struct sockaddr *)&any, sizeof(any)));
+	int val = 1;
 	CHECK_ERRNO(setsockopt(mcfd, IPPROTO_IP, IP_MULTICAST_ALL,
 				&val, sizeof(val)));
 	struct ip_mreqn mreq;
@@ -108,9 +114,9 @@ std::string get_first_announce(struct sockaddr_in *local_addr, uint64_t cluster_
 	mreq.imr_ifindex = 0;
 	CHECK_ERRNO(setsockopt(mcfd, IPPROTO_IP, IP_ADD_MEMBERSHIP,
 				&mreq, sizeof(mreq)));
-	CHECK_ERRNO(connect(mcfd, ai->ai_addr, ai->ai_addrlen));
 
 	struct sockaddr_storage localaddr_store;
+#if 0
 	auto localaddr = reinterpret_cast<struct sockaddr *>(&localaddr_store);
 	socklen_t localaddr_len = sizeof(localaddr_store);
 	getsockname(mcfd, localaddr, &localaddr_len);
@@ -121,6 +127,7 @@ std::string get_first_announce(struct sockaddr_in *local_addr, uint64_t cluster_
 	if (ret)
 		throw std::system_error(ret, gai_category());
 	std::cerr << "Multicast socket bound to " << mchost << ":" << mcport << "\n";
+#endif
 
 	struct QueryServersMessage sendmsg;
 	sendmsg.hdr.version = 0;
@@ -130,7 +137,8 @@ std::string get_first_announce(struct sockaddr_in *local_addr, uint64_t cluster_
 	native_to_big_inplace(sendmsg.reserved8 = 0);
 	native_to_big_inplace(sendmsg.cluster_id = cluster_id);
 
-	CHECK_ERRNO(send(mcfd, &sendmsg, sizeof(sendmsg), 0));
+	CHECK_ERRNO(sendto(mcfd, &sendmsg, sizeof(sendmsg), 0,
+				ai->ai_addr, ai->ai_addrlen));
 
 	union MessageBuf recvmsg;
 	do {
@@ -166,7 +174,7 @@ void run(const char *local_ip, const char *cluster_id_str)
 	if (errno || *endp != '\0') {
 		throw format("bad cluster id \"%s\"") % cluster_id;
 	}
-	std::cerr << format("cluster id is %u\n") % cluster_id;
+	std::cerr << format("cluster id is %x\n") % cluster_id;
 
 	ret = getaddrinfo(local_ip, NULL, NULL, &ai);
 	if (ret)
@@ -174,6 +182,7 @@ void run(const char *local_ip, const char *cluster_id_str)
 	host = get_first_announce(reinterpret_cast<struct sockaddr_in *>(ai->ai_addr),
 				  cluster_id);
 	freeaddrinfo(ai);
+	std::cerr << format("server is at %s\n") % host;
 
 	cs = new ConnState;
 
@@ -190,7 +199,8 @@ void run(const char *local_ip, const char *cluster_id_str)
 	CHECK_ERRNO(rdma_create_ep(&cs->id, rai, NULL, &attr));
 
 	cs->recv_mr = ibv_reg_mr(cs->id->pd, cs->recv_bufs,
-				 sizeof(cs->recv_bufs), 0);
+				 sizeof(cs->recv_bufs),
+				 IBV_ACCESS_LOCAL_WRITE);
 	if (!cs->recv_mr) {
 		rdma_reject(cs->id, NULL, 0);
 		return;
@@ -230,7 +240,6 @@ void run(const char *local_ip, const char *cluster_id_str)
 	CHECK_ERRNO(rdma_post_send(cs->id, cs->nextsend, cs->nextsend,
 				   sizeof(*cs->nextsend),
 				   cs->send_mr, IBV_SEND_SIGNALED));
-	std::cerr << "packet sent\n";
 
 	CHECK_ERRNO(rdma_get_recv_comp(cs->id, &wc));
 	process_wc(cs, &wc);
