@@ -179,7 +179,8 @@ src_examples_locking_demo_client_LDADD = src/liburdma/liburdma.la $(DPDK_LIBS) -
 
 bin_PROGRAMS += src/ros/ros_server
 src_ros_ros_server_SOURCES = \
-	src/ros/server.cc src/ros/ros.h
+	src/ros/server.cc src/ros/ros.h \
+	src/ros/Tree.cc src/ros/Tree.h src/ros/Tree_internal.h
 src_ros_ros_server_CXXFLAGS = $(DPDK_CFLAGS)
 src_ros_ros_server_CPPFLAGS = -I$(srcdir)/include -I$(srcdir)/src/util -I$(srcdir)/src/liburdma $(CPPFLAGS) $(DPDK_CPPFLAGS)
 src_ros_ros_server_LDFLAGS = $(LDFLAGS) $(DPDK_LDFLAGS)
@@ -187,7 +188,8 @@ src_ros_ros_server_LDADD = src/liburdma/liburdma.la $(DPDK_LIBS) -lm
 
 bin_PROGRAMS += src/ros/ros_client
 src_ros_ros_client_SOURCES = \
-	src/ros/client.cc src/ros/ros.h
+	src/ros/client.cc src/ros/ros.h \
+	src/ros/Tree.cc src/ros/Tree.h src/ros/Tree_internal.h
 src_ros_ros_client_CXXFLAGS = $(DPDK_CFLAGS)
 src_ros_ros_client_CPPFLAGS = -I$(srcdir)/include -I$(srcdir)/src/util -I$(srcdir)/src/liburdma $(CPPFLAGS) $(DPDK_CPPFLAGS)
 src_ros_ros_client_LDFLAGS = $(LDFLAGS) $(DPDK_LDFLAGS)

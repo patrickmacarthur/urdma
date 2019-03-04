@@ -30,7 +30,6 @@ namespace {
 
 struct ROSRemoteObject {
 	uint64_t uid;
-	uint64_t remote_addr;
 	uint32_t rkey;
 };
 
@@ -39,6 +38,7 @@ struct ConnState {
 	struct ibv_mr *send_mr;
 	struct ibv_mr *recv_mr;
 	unsigned long server_hostid;
+	uint32_t remote_rkey;
 	struct ROSRemoteObject root;
 	union MessageBuf *nextsend;
 	union MessageBuf recv_bufs[32];
@@ -47,9 +47,7 @@ struct ConnState {
 void process_announce(struct ConnState *cs, struct AnnounceMessage *msg)
 {
 	cs->server_hostid = big_to_native(msg->hdr.hostid);
-	cs->root.uid = big_to_native(msg->root_uid);
-	cs->root.remote_addr = big_to_native(msg->root_addr);
-	cs->root.rkey = big_to_native(msg->root_rkey);
+	cs->remote_rkey = big_to_native(msg->pool_rkey);
 	std::cout << format("announce from hostid %x\n") % cs->server_hostid;
 	std::cout.flush();
 }

@@ -41,10 +41,8 @@ struct AnnounceMessage {
 	struct MessageHeader hdr;
 	uint32_t rdma_ipv4_addr;
 	uint64_t cluster_id;
-	uint64_t root_uid;
-	uint64_t root_addr;
-	uint32_t root_rkey;
-	uint32_t reserved44;
+	uint32_t pool_rkey;
+	uint32_t reserved28;
 };
 
 struct GetHdrRequest {

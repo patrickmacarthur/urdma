@@ -14,11 +14,14 @@
 #include <boost/format.hpp>
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netdb.h>
+#include <sys/mman.h>
 
 #include <rdma/rdma_cma.h>
 #include <rdma/rdma_verbs.h>
 
+#include "Tree.h"
 #include "ros.h"
 #include "gai_category.h"
 
@@ -26,6 +29,7 @@ using boost::endian::big_to_native;
 using boost::endian::native_to_big_inplace;
 using boost::format;
 
+static uint64_t ros_magic = 0x2752005552005572;
 static uint64_t cluster_id = 0x1122334455667788;
 static unsigned long hostid = 0x12345678;
 
@@ -36,6 +40,13 @@ struct RDMALock {
 struct RDMAObjectID {
 	uint64_t nodeid;
 	uint64_t uid;
+};
+
+struct ROSPoolHeader {
+	uint64_t magic;
+	uint64_t cluster_id;
+	uint64_t host_id;
+	uint64_t objcount;
 };
 
 struct ROSObjectHeader {
@@ -49,15 +60,17 @@ struct ROSObjectHeader {
 
 struct TreeRoot {
 	struct ROSObjectHeader objhdr;
-	uint64_t rootnode_uid;
 };
+void *pool_base;
+const size_t pool_size = 1073741824;
+struct ROSPoolHeader *pool_header;
 struct TreeRoot *root_obj;
-struct ibv_mr *root_obj_mr;
+struct ibv_mr *pool_mr;
 
 static_assert(sizeof(struct MessageHeader) == 8, "incorrect size for MessageHeader");
 static_assert(offsetof(struct AnnounceMessage, hdr.reserved2) == 2, "wrong offset for reserved2");
-static_assert(offsetof(struct AnnounceMessage, reserved44) == 44, "wrong offset for reserved44");
-static_assert(sizeof(struct AnnounceMessage) == 48, "incorrect size for LockAnnounceMessage");
+static_assert(offsetof(struct AnnounceMessage, reserved28) == 28, "wrong offset for reserved28");
+static_assert(sizeof(struct AnnounceMessage) == 32, "incorrect size for LockAnnounceMessage");
 static_assert(offsetof(struct GetHdrRequest, hdr.reserved2) == 2, "wrong offset for reserved2");
 static_assert(sizeof(struct GetHdrRequest) == 16, "incorrect size for GetHdrRequest");
 static_assert(offsetof(struct GetHdrResponse, hdr.reserved2) == 2, "wrong offset for reserved2");
@@ -96,7 +109,7 @@ void process_gethdrreq(struct ConnState *cs, struct GetHdrRequest *msg)
 	native_to_big_inplace(cs->send_buf->gethdrresp.replica_hostid1 = 0);
 	native_to_big_inplace(cs->send_buf->gethdrresp.replica_hostid2 = 0);
 	native_to_big_inplace(cs->send_buf->gethdrresp.addr = (uintptr_t)root_obj);
-	native_to_big_inplace(cs->send_buf->gethdrresp.rkey = root_obj_mr->rkey);
+	native_to_big_inplace(cs->send_buf->gethdrresp.rkey = pool_mr->rkey);
 	native_to_big_inplace(cs->send_buf->gethdrresp.reserved36 = 0);
 
 	int ret = rdma_post_send(cs->id, cs,
@@ -182,17 +195,34 @@ void handle_connection(struct ConnState *cs)
 
 void init_tree_root(struct ibv_pd *pd)
 {
-	root_obj = reinterpret_cast<struct TreeRoot *>(
-			aligned_alloc(CACHE_LINE_SIZE, sizeof(*root_obj)));
-	if (!root_obj)
+	int fd = open("/opt/local-scratch/pagemap.dat", O_RDWR|O_CREAT, 0644);
+	if (fd < 0)
 		throw std::system_error(errno, std::system_category());
-	memset(root_obj, 0, sizeof(*root_obj));
-	root_obj->objhdr.uid = 1;
 
-	root_obj_mr = ibv_reg_mr(pd, root_obj, sizeof(*root_obj),
+	int ret = ftruncate(fd, 1073741824ULL);
+	if (ret < 0)
+		throw std::system_error(errno, std::system_category());
+
+	pool_base = mmap(NULL, 1073741824ULL, PROT_READ|PROT_WRITE,
+			MAP_SHARED, fd, 0);
+	if (!pool_base)
+		throw std::system_error(errno, std::system_category());
+	pool_header = reinterpret_cast<struct ROSPoolHeader *>(pool_base);
+	root_obj = reinterpret_cast<struct TreeRoot *>(
+			reinterpret_cast<uint8_t *>(pool_base) + 4096);
+
+	if (pool_header->magic != ros_magic) {
+		pool_header->magic = ros_magic;
+		pool_header->cluster_id = cluster_id;
+		pool_header->host_id = hostid;
+		pool_header->objcount = 1;
+		root_obj->objhdr.uid = 1;
+	}
+
+	pool_mr = ibv_reg_mr(pd, pool_base, pool_size,
 				 IBV_ACCESS_LOCAL_WRITE|IBV_ACCESS_REMOTE_READ
 				 |IBV_ACCESS_REMOTE_WRITE);
-	if (!root_obj_mr) {
+	if (!pool_mr) {
 		throw std::system_error(errno, std::system_category());
 	}
 }
@@ -329,6 +359,7 @@ void run(char *host)
 	announcemsg->rdma_ipv4_addr
 		= (reinterpret_cast<struct sockaddr_in *>(sa)->sin_addr.s_addr);
 	native_to_big_inplace(announcemsg->cluster_id = cluster_id);
+	native_to_big_inplace(announcemsg->pool_rkey = pool_mr->rkey);
 
 	std::thread mcast_thread{mcast_responder, userhost};
 
@@ -353,6 +384,8 @@ void run(char *host)
 
 int main(int argc, char *argv[])
 {
+	char buf[1024];
+	auto *t = new(buf) Tree<int>(10);
 	run(argv[1]);
 	exit(EXIT_SUCCESS);
 }
