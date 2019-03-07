@@ -10,6 +10,7 @@
 #include <iostream>
 #include <thread>
 
+#include <boost/dynamic_bitset.hpp>
 #include <boost/endian/conversion.hpp>
 #include <boost/format.hpp>
 
@@ -25,6 +26,7 @@
 #include "ros.h"
 #include "gai_category.h"
 
+using boost::dynamic_bitset;
 using boost::endian::big_to_native;
 using boost::endian::native_to_big_inplace;
 using boost::format;
@@ -46,7 +48,8 @@ struct ROSPoolHeader {
 	uint64_t magic;
 	uint64_t cluster_id;
 	uint64_t host_id;
-	uint64_t objcount;
+	uint64_t cur_obj_count;
+	uint64_t max_obj_count;
 };
 
 struct ROSObjectHeader {
@@ -62,10 +65,13 @@ struct TreeRoot {
 	struct ROSObjectHeader objhdr;
 };
 void *pool_base;
-const size_t pool_size = 1073741824;
+const size_t pool_size = 1073741824ULL;
 struct ROSPoolHeader *pool_header;
-struct TreeRoot *root_obj;
+struct ROSObjectHeader *root_obj;
 struct ibv_mr *pool_mr;
+dynamic_bitset<> *store_bitset;
+
+size_t page_size = 4096;
 
 static_assert(sizeof(struct MessageHeader) == 8, "incorrect size for MessageHeader");
 static_assert(offsetof(struct AnnounceMessage, hdr.reserved2) == 2, "wrong offset for reserved2");
@@ -90,6 +96,11 @@ struct ConnState {
 
 struct AnnounceMessage *announcemsg;
 
+uint64_t make_obj_id(size_t idx)
+{
+	return hostid << 32 + 1 << 16 + idx;
+}
+
 void process_announce(struct ConnState *cs, struct AnnounceMessage *msg)
 {
 	throw "not implemented";
@@ -101,7 +112,6 @@ void process_gethdrreq(struct ConnState *cs, struct GetHdrRequest *msg)
 			% big_to_native(msg->uid);
 	cs->send_buf = reinterpret_cast<union MessageBuf *>(
 			aligned_alloc(CACHE_LINE_SIZE, sizeof(*cs->send_buf)));
-	cs->send_buf->gethdrresp.hdr.version = 1;
 	cs->send_buf->hdr.version = 0;
 	cs->send_buf->hdr.opcode = OPCODE_GETHDR_RESP;
 	native_to_big_inplace(cs->send_buf->gethdrresp.hdr.reserved2 = 0);
@@ -123,6 +133,31 @@ void process_gethdrresp(struct ConnState *cs, struct GetHdrResponse *msg)
 	throw "not implemented";
 }
 
+void process_allocreq(struct ConnState *cs, struct AllocRequest *msg)
+{
+	std::cout << "alloc request from client\n";
+	auto idx = store_bitset->find_first();
+	if (idx == store_bitset->npos) {
+		/* error case */
+		return;
+	}
+
+	ROSObjectHeader *newobj = reinterpret_cast<struct ROSObjectHeader *>(
+			reinterpret_cast<uint8_t *>(pool_base) + idx * page_size);
+	newobj->uid = make_obj_id(idx);
+
+	auto alloc_msg = reinterpret_cast<struct AllocResponse *>(
+			aligned_alloc(CACHE_LINE_SIZE, sizeof(*cs->send_buf)));
+	alloc_msg->hdr.version = 0;
+	alloc_msg->hdr.opcode = OPCODE_ALLOC_RESP;
+	native_to_big_inplace(alloc_msg->hdr.reserved2 = 0);
+	native_to_big_inplace(alloc_msg->hdr.hostid = hostid);
+	native_to_big_inplace(alloc_msg->uid = newobj->uid);
+	native_to_big_inplace(alloc_msg->replica_hostid1 = 0);
+	native_to_big_inplace(alloc_msg->replica_hostid2 = 0);
+	native_to_big_inplace(alloc_msg->addr = (uintptr_t)root_obj);
+}
+
 void process_wc(struct ConnState *cs, struct ibv_wc *wc)
 {
 	auto mb = reinterpret_cast<union MessageBuf *>(wc->wr_id);
@@ -135,6 +170,9 @@ void process_wc(struct ConnState *cs, struct ibv_wc *wc)
 		break;
 	case OPCODE_GETHDR_RESP:
 		process_gethdrresp(cs, &mb->gethdrresp);
+		break;
+	case OPCODE_ALLOC_REQ:
+		process_allocreq(cs, &mb->allocreq);
 		break;
 	default:
 		return;
@@ -199,24 +237,31 @@ void init_tree_root(struct ibv_pd *pd)
 	if (fd < 0)
 		throw std::system_error(errno, std::system_category());
 
-	int ret = ftruncate(fd, 1073741824ULL);
+	int ret = ftruncate(fd, pool_size);
 	if (ret < 0)
 		throw std::system_error(errno, std::system_category());
 
-	pool_base = mmap(NULL, 1073741824ULL, PROT_READ|PROT_WRITE,
+	pool_base = mmap(NULL, pool_size, PROT_READ|PROT_WRITE,
 			MAP_SHARED, fd, 0);
 	if (!pool_base)
 		throw std::system_error(errno, std::system_category());
 	pool_header = reinterpret_cast<struct ROSPoolHeader *>(pool_base);
-	root_obj = reinterpret_cast<struct TreeRoot *>(
-			reinterpret_cast<uint8_t *>(pool_base) + 4096);
+	root_obj = reinterpret_cast<struct ROSObjectHeader *>(
+			reinterpret_cast<uint8_t *>(pool_base) + page_size);
 
 	if (pool_header->magic != ros_magic) {
 		pool_header->magic = ros_magic;
 		pool_header->cluster_id = cluster_id;
 		pool_header->host_id = hostid;
-		pool_header->objcount = 1;
-		root_obj->objhdr.uid = 1;
+		pool_header->cur_obj_count = 1;
+		pool_header->max_obj_count = pool_size / page_size - 1;
+		root_obj->uid = 1;
+	}
+
+	store_bitset = new dynamic_bitset<>(pool_header->max_obj_count, 0);
+	for (dynamic_bitset<>::size_type i = 0; i < store_bitset->size(); ++i) {
+		(*store_bitset)[i] = reinterpret_cast<struct ROSObjectHeader *>(
+			reinterpret_cast<uint8_t *>(pool_base) + i * page_size)->uid != 0;
 	}
 
 	pool_mr = ibv_reg_mr(pd, pool_base, pool_size,
@@ -225,6 +270,7 @@ void init_tree_root(struct ibv_pd *pd)
 	if (!pool_mr) {
 		throw std::system_error(errno, std::system_category());
 	}
+	std::cerr << format("rkey is %x\n") % pool_mr->rkey;
 }
 
 struct ibv_pd *get_pd()

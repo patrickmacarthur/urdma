@@ -49,6 +49,7 @@ void process_announce(struct ConnState *cs, struct AnnounceMessage *msg)
 	cs->server_hostid = big_to_native(msg->hdr.hostid);
 	cs->remote_rkey = big_to_native(msg->pool_rkey);
 	std::cout << format("announce from hostid %x\n") % cs->server_hostid;
+	std::cout << format("rkey is %x\n") % cs->remote_rkey;
 	std::cout.flush();
 }
 

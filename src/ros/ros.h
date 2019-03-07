@@ -21,6 +21,10 @@ enum {
 	OPCODE_ANNOUNCE,
 	OPCODE_GETHDR_REQ,
 	OPCODE_GETHDR_RESP,
+	OPCODE_ALLOC_REQ,
+	OPCODE_ALLOC_RESP,
+	OPCODE_FREE_REQ,
+	OPCODE_FREE_RESP,
 };
 
 struct MessageHeader {
@@ -60,12 +64,29 @@ struct GetHdrResponse {
 	uint32_t reserved36;
 };
 
+struct AllocRequest {
+	struct MessageHeader hdr;
+	uint64_t uid;
+};
+
+struct AllocResponse {
+	struct MessageHeader hdr;
+	uint32_t status;
+	uint32_t reserved12;
+	uint64_t uid;
+	uint32_t replica_hostid1;
+	uint32_t replica_hostid2;
+	uint64_t addr;
+};
+
 union MessageBuf {
 	struct MessageHeader hdr;
 	struct QueryServersMessage qsmsg;
 	struct AnnounceMessage announce;
 	struct GetHdrRequest gethdrreq;
 	struct GetHdrResponse gethdrresp;
+	struct AllocRequest allocreq;
+	struct AllocResponse allocresp;
 	char buf[40];
 };
 
