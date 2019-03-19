@@ -7,8 +7,10 @@
 #include <cstdlib>
 
 #include <exception>
+#include <future>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <type_traits>
 
 #include <boost/endian/conversion.hpp>
@@ -20,6 +22,7 @@
 #include <rdma/rdma_verbs.h>
 
 #include "ros.h"
+#include "ROSPtr.hpp"
 #include "gai_category.h"
 
 using boost::endian::big_to_native;
@@ -33,32 +36,24 @@ struct ROSRemoteObject {
 	uint32_t rkey;
 };
 
-struct ConnState {
-	struct rdma_cm_id *id;
-	struct ibv_mr *send_mr;
-	struct ibv_mr *recv_mr;
-	unsigned long server_hostid;
-	uint32_t remote_rkey;
-	struct ROSRemoteObject root;
-	union MessageBuf *nextsend;
-	union MessageBuf recv_bufs[32];
-};
+std::map<unsigned long, struct ClientConnState *> cnxions;
 
-void process_announce(struct ConnState *cs, struct AnnounceMessage *msg)
+void process_announce(struct ClientConnState *cs, struct AnnounceMessage *msg)
 {
 	cs->server_hostid = big_to_native(msg->hdr.hostid);
 	cs->remote_rkey = big_to_native(msg->pool_rkey);
 	std::cout << format("announce from hostid %x\n") % cs->server_hostid;
 	std::cout << format("rkey is %x\n") % cs->remote_rkey;
 	std::cout.flush();
+	cnxions.insert(std::make_pair(cs->server_hostid, cs));
 }
 
-void process_gethdrreq(struct ConnState *cs, struct GetHdrRequest *msg)
+void process_gethdrreq(struct ClientConnState *cs, struct GetHdrRequest *msg)
 {
 	throw "not implemented";
 }
 
-void process_gethdrresp(struct ConnState *cs, struct GetHdrResponse *msg)
+void process_gethdrresp(struct ClientConnState *cs, struct GetHdrResponse *msg)
 {
 	std::cout << format("gethdr response for object %x remote addr %x rkey %x\n")
 			% big_to_native(msg->uid)
@@ -66,7 +61,7 @@ void process_gethdrresp(struct ConnState *cs, struct GetHdrResponse *msg)
 	std::cout.flush();
 }
 
-void process_wc(struct ConnState *cs, struct ibv_wc *wc)
+void process_wc(struct ClientConnState *cs, struct ibv_wc *wc)
 {
 	auto mb = reinterpret_cast<union MessageBuf *>(wc->wr_id);
 	switch (mb->hdr.opcode) {
@@ -82,6 +77,51 @@ void process_wc(struct ConnState *cs, struct ibv_wc *wc)
 	default:
 		return;
 	}
+}
+
+using msg_promise = std::promise<union MessageBuf *>;
+using msg_future = std::future<union MessageBuf *>;
+using promise_map = std::map<unsigned long, msg_promise>;
+
+void completion_thread(struct ibv_comp_channel *chan, promise_map &wc_promises)
+{
+	static const size_t max_wc_count = 8;
+	struct ibv_cq *cq;
+	struct ibv_wc wc[max_wc_count];
+	void *context;
+	int event_cnt = 0;
+	int ret;
+	do {
+		ret = ibv_get_cq_event(chan, &cq, &context);
+		if (ret)
+			goto err;
+		event_cnt++;
+		ret = ibv_req_notify_cq(cq, 0);
+		if (ret)
+			goto err;
+		ret = ibv_poll_cq(cq, max_wc_count, wc);
+		if (ret < 0)
+			goto err;
+		for (int i = 0; i < ret; i++) {
+			if (wc->status == IBV_WC_WR_FLUSH_ERR)
+				goto err;
+			auto msg = reinterpret_cast<union MessageBuf *>(wc->wr_id);
+			auto req_id = big_to_native(msg->hdr.req_id);
+			auto iter = wc_promises.find(req_id);
+			if (iter != wc_promises.end()) {
+				if (!wc->status) {
+					iter->second.set_value(msg);
+				}
+				wc_promises.erase(iter);
+			} else {
+				std::cerr << format("Unexpected message with opcode %u and req_id %x")
+					% msg->hdr.opcode % req_id;
+			}
+		}
+	} while (1);
+
+err:
+	wc_promises.erase(wc_promises.begin(), wc_promises.end());
 }
 
 std::string get_first_announce(struct sockaddr_in *local_addr, uint64_t cluster_id)
@@ -131,7 +171,7 @@ std::string get_first_announce(struct sockaddr_in *local_addr, uint64_t cluster_
 	struct QueryServersMessage sendmsg;
 	sendmsg.hdr.version = 0;
 	sendmsg.hdr.opcode = OPCODE_QUERY_SERVERS;
-	native_to_big_inplace(sendmsg.hdr.reserved2 = 0);
+	native_to_big_inplace(sendmsg.hdr.req_id = 0);
 	native_to_big_inplace(sendmsg.hdr.hostid = 0);
 	native_to_big_inplace(sendmsg.reserved8 = 0);
 	native_to_big_inplace(sendmsg.cluster_id = cluster_id);
@@ -155,7 +195,6 @@ std::string get_first_announce(struct sockaddr_in *local_addr, uint64_t cluster_
 
 void run(const char *local_ip, const char *cluster_id_str)
 {
-	struct ConnState *cs;
 	struct rdma_addrinfo hints, *rai;
 	struct ibv_qp_init_attr attr;
 	struct rdma_conn_param cparam;
@@ -183,7 +222,7 @@ void run(const char *local_ip, const char *cluster_id_str)
 	freeaddrinfo(ai);
 	std::cerr << format("server is at %s\n") % host;
 
-	cs = new ConnState;
+	auto *cs = new ClientConnState;
 
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_flags = 0;
@@ -205,6 +244,21 @@ void run(const char *local_ip, const char *cluster_id_str)
 		return;
 	}
 
+	ibv_req_notify_cq(cs->id->send_cq, 0);
+	promise_map send_wc_promises;
+	std::thread send_cq_thread{completion_thread,
+				   cs->id->send_cq_channel,
+				   std::ref(send_wc_promises)};
+	ibv_req_notify_cq(cs->id->recv_cq, 0);
+	promise_map recv_wc_promises;
+	std::thread recv_cq_thread{completion_thread,
+				   cs->id->recv_cq_channel,
+				   std::ref(recv_wc_promises)};
+
+	msg_promise announce_promise;
+	msg_future announce_future = announce_promise.get_future();
+	recv_wc_promises.insert(std::make_pair(0, std::move(announce_promise)));
+
 	for (int i = 0; i < 32; i++) {
 		ret = rdma_post_recv(cs->id, cs->recv_bufs[i].buf,
 				     cs->recv_bufs[i].buf,
@@ -220,15 +274,15 @@ void run(const char *local_ip, const char *cluster_id_str)
 	cparam.responder_resources = 1;
 	CHECK_ERRNO(rdma_connect(cs->id, &cparam));
 
-	CHECK_ERRNO(rdma_get_recv_comp(cs->id, &wc));
-	process_wc(cs, &wc);
+	process_announce(cs, &announce_future.get()->announce);
 
 	cs->nextsend = reinterpret_cast<union MessageBuf *>(
 			aligned_alloc(CACHE_LINE_SIZE, sizeof(*cs->nextsend)));
 	CHECK_PTR_ERRNO(cs->nextsend);
 	cs->nextsend->hdr.version = 0;
 	cs->nextsend->hdr.opcode = OPCODE_GETHDR_REQ;
-	native_to_big_inplace(cs->nextsend->gethdrreq.hdr.reserved2 = 0);
+	auto req_id = cs->next_req_id++;
+	native_to_big_inplace(cs->nextsend->gethdrreq.hdr.req_id = req_id);
 	native_to_big_inplace(cs->nextsend->gethdrreq.hdr.hostid = 0);
 	native_to_big_inplace(cs->nextsend->gethdrreq.uid = 1);
 
@@ -236,12 +290,14 @@ void run(const char *local_ip, const char *cluster_id_str)
 				 sizeof(*cs->nextsend), 0);
 	CHECK_PTR_ERRNO(cs->send_mr);
 
+	msg_promise gethdrresp_promise;
+	msg_future gethdrresp_future = gethdrresp_promise.get_future();
+	recv_wc_promises.insert(std::make_pair(req_id, std::move(gethdrresp_promise)));
 	CHECK_ERRNO(rdma_post_send(cs->id, cs->nextsend, cs->nextsend,
 				   sizeof(*cs->nextsend),
 				   cs->send_mr, IBV_SEND_SIGNALED));
 
-	CHECK_ERRNO(rdma_get_recv_comp(cs->id, &wc));
-	process_wc(cs, &wc);
+	process_gethdrresp(cs, &announce_future.get()->gethdrresp);
 }
 
 }

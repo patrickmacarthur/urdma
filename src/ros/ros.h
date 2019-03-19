@@ -11,6 +11,8 @@
 extern "C" {
 #endif
 
+const size_t page_size = 4096;
+
 static const char *ros_mcast_addr = "239.255.123.45";
 static int ros_mcast_port = 9002;
 
@@ -30,7 +32,7 @@ enum {
 struct MessageHeader {
 	uint8_t version;
 	uint8_t opcode;
-	uint16_t reserved2;
+	uint16_t req_id;
 	uint32_t hostid;
 };
 

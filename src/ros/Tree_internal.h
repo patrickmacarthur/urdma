@@ -23,26 +23,28 @@
  *   less than <tt>key[i]</tt> and strictly greater than <tt>key[i-1]</tt> (for
  *   \c i > 0).
  */
-template <typename T>
+template <typename T, int N>
 struct Node {
-    uint8_t valueCount;
+    static const int valueCount = N-1;
         /**< Maximum number of keys for a B tree of degree \p N. */
-    uint8_t childCount;
+    static const int childCount = N;
         /**< Maximum number of children for a B tree of degree \p N. */
 
-    uint16_t n;
+    uint32_t n;
         /**< Number of keys. Must be in range 1..\p valueCount. */
-    T *key;
+    T key[valueCount];
         /**< Keys stored in this node. Only values 0..\p n -1 are valid. */
     struct ChildEntry {
-        Node<T> *ptr;
+        Node<T, N> *ptr;
         uint32_t minVersion;
         uint32_t maxVersion;
+
+	Node<T, N> *&operator *() { return ptr; }
+	Node<T, N> *&operator ->() { return ptr; }
     } *child;
         /**< Child nodes of this node. Only values 0..\p n are valid. */
 
-    Node(Node<T> *leftChild, const T &v, Node<T> *rightChild,
-         int maxChildCount);
+    Node(Node<T, N> *leftChild, const T &v, Node<T, N> *rightChild);
     ~Node();
     Node(const Node &node) = delete;
     Node &operator =(const Node &node) = delete;
@@ -54,7 +56,7 @@ struct Node {
      * is called and should not be referenced in any way after this function has
      * returned.
      */
-    Node(Node &&node) = delete;
+    Node(Node &&node) = default;
 
     /** \brief Replace this node with the contents of \p node.
      *
@@ -62,32 +64,24 @@ struct Node {
      * in an undefined state after this function is called and should not be
      * referenced in any way after this function has returned.
      */
-    Node &operator =(Node &&) = delete;
+    Node &operator =(Node &&) = default;
 
-    bool exists(const T &v, unsigned long version) const;
+    bool exists(const T &v) const;
     bool leaf() const { return !this->child[0].ptr; }
     int height() const;
-    bool insert(T &v, Node<T> *&newNode, unsigned long version);
-    static void erase(Node *&node, const T &v, unsigned long version);
-    std::ostream &output(std::ostream &os, int level, unsigned long version) const;
+    bool insert(T &v, Node<T, N> *&newNode);
+    static void erase(Node *&node, const T &v);
+    std::ostream &output(std::ostream &os, int level) const;
     void check_invariants(T, const T &) const;
 
-    static constexpr size_t size() { return sizeof(Node); }// + valueCount * sizeof
-#if 0
-    void *operator new(size_t size);
-    void operator delete(void *p);
-#endif
-
 private:
-    void add_item(int pos, const T &v, Node<T> *right, unsigned long version);
-    void split(int pos, T &v, Node<T> *&newNode, unsigned long version);
+    void add_item(int pos, const T &v, Node<T, N> *right);
+    void split(int pos, T &v, Node<T, N> *&newNode);
 
-    T remove_item(int pos, unsigned long version);
+    T remove_item(int pos);
 
     /** \brief Move v and all items from right into left. */
     void merge(Node *left, int v, Node *right);
 };
-
-extern template class Node<int>;
 
 #endif

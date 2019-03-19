@@ -71,15 +71,10 @@ struct ROSObjectHeader *root_obj;
 struct ibv_mr *pool_mr;
 dynamic_bitset<> *store_bitset;
 
-size_t page_size = 4096;
-
 static_assert(sizeof(struct MessageHeader) == 8, "incorrect size for MessageHeader");
-static_assert(offsetof(struct AnnounceMessage, hdr.reserved2) == 2, "wrong offset for reserved2");
 static_assert(offsetof(struct AnnounceMessage, reserved28) == 28, "wrong offset for reserved28");
 static_assert(sizeof(struct AnnounceMessage) == 32, "incorrect size for LockAnnounceMessage");
-static_assert(offsetof(struct GetHdrRequest, hdr.reserved2) == 2, "wrong offset for reserved2");
 static_assert(sizeof(struct GetHdrRequest) == 16, "incorrect size for GetHdrRequest");
-static_assert(offsetof(struct GetHdrResponse, hdr.reserved2) == 2, "wrong offset for reserved2");
 static_assert(offsetof(struct GetHdrResponse, reserved36) == 36, "wrong offset for reserved36");
 static_assert(sizeof(struct GetHdrResponse) == 40, "incorrect size for GetHdrResponse");
 
@@ -114,7 +109,7 @@ void process_gethdrreq(struct ConnState *cs, struct GetHdrRequest *msg)
 			aligned_alloc(CACHE_LINE_SIZE, sizeof(*cs->send_buf)));
 	cs->send_buf->hdr.version = 0;
 	cs->send_buf->hdr.opcode = OPCODE_GETHDR_RESP;
-	native_to_big_inplace(cs->send_buf->gethdrresp.hdr.reserved2 = 0);
+	cs->send_buf->gethdrresp.hdr.req_id = msg->hdr.req_id;
 	native_to_big_inplace(cs->send_buf->gethdrresp.hdr.hostid = hostid);
 	native_to_big_inplace(cs->send_buf->gethdrresp.replica_hostid1 = 0);
 	native_to_big_inplace(cs->send_buf->gethdrresp.replica_hostid2 = 0);
@@ -150,7 +145,7 @@ void process_allocreq(struct ConnState *cs, struct AllocRequest *msg)
 			aligned_alloc(CACHE_LINE_SIZE, sizeof(*cs->send_buf)));
 	alloc_msg->hdr.version = 0;
 	alloc_msg->hdr.opcode = OPCODE_ALLOC_RESP;
-	native_to_big_inplace(alloc_msg->hdr.reserved2 = 0);
+	cs->send_buf->gethdrresp.hdr.req_id = msg->hdr.req_id;
 	native_to_big_inplace(alloc_msg->hdr.hostid = hostid);
 	native_to_big_inplace(alloc_msg->uid = newobj->uid);
 	native_to_big_inplace(alloc_msg->replica_hostid1 = 0);
@@ -400,7 +395,7 @@ void run(char *host)
 		return;
 	announcemsg->hdr.version = 0;
 	announcemsg->hdr.opcode = OPCODE_ANNOUNCE;
-	native_to_big_inplace(announcemsg->hdr.reserved2 = 0);
+	native_to_big_inplace(announcemsg->hdr.req_id = 0);
 	native_to_big_inplace(announcemsg->hdr.hostid = hostid);
 	announcemsg->rdma_ipv4_addr
 		= (reinterpret_cast<struct sockaddr_in *>(sa)->sin_addr.s_addr);
@@ -431,7 +426,7 @@ void run(char *host)
 int main(int argc, char *argv[])
 {
 	char buf[1024];
-	auto *t = new(buf) Tree<int>(10);
+	auto *t = new(buf) Tree<int, 10>();
 	run(argv[1]);
 	exit(EXIT_SUCCESS);
 }
