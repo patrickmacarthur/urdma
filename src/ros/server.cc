@@ -103,7 +103,7 @@ void process_announce(struct ConnState *cs, struct AnnounceMessage *msg)
 
 void process_gethdrreq(struct ConnState *cs, struct GetHdrRequest *msg)
 {
-	std::cout << format("gethdr request for object %x\n")
+	std::cerr << format("gethdr request for object %x\n")
 			% big_to_native(msg->uid);
 	cs->send_buf = reinterpret_cast<union MessageBuf *>(
 			aligned_alloc(CACHE_LINE_SIZE, sizeof(*cs->send_buf)));
@@ -151,11 +151,17 @@ void process_allocreq(struct ConnState *cs, struct AllocRequest *msg)
 	native_to_big_inplace(alloc_msg->replica_hostid1 = 0);
 	native_to_big_inplace(alloc_msg->replica_hostid2 = 0);
 	native_to_big_inplace(alloc_msg->addr = (uintptr_t)root_obj);
+
+	int ret = rdma_post_send(cs->id, cs,
+			     reinterpret_cast<void *>(cs->send_buf),
+			     sizeof(*cs->send_buf), NULL,
+			     IBV_SEND_SIGNALED|IBV_SEND_INLINE);
 }
 
 void process_wc(struct ConnState *cs, struct ibv_wc *wc)
 {
 	auto mb = reinterpret_cast<union MessageBuf *>(wc->wr_id);
+	std::cerr << format("got message with opcode %x\n") % mb->hdr.opcode;
 	switch (mb->hdr.opcode) {
 	case OPCODE_ANNOUNCE:
 		process_announce(cs, &mb->announce);
@@ -211,6 +217,7 @@ void handle_connection(struct ConnState *cs)
 	if (ret)
 		return;
 
+	std::cerr << format("sent announce\n");
 	struct ibv_wc wc[32];
 	int count;
 	while ((count = ibv_poll_cq(cs->id->recv_cq, 32, wc)) >= 0) {

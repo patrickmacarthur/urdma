@@ -79,10 +79,6 @@ void process_wc(struct ClientConnState *cs, struct ibv_wc *wc)
 	}
 }
 
-using msg_promise = std::promise<union MessageBuf *>;
-using msg_future = std::future<union MessageBuf *>;
-using promise_map = std::map<unsigned long, msg_promise>;
-
 void completion_thread(struct ibv_comp_channel *chan, promise_map &wc_promises)
 {
 	static const size_t max_wc_count = 8;
@@ -93,29 +89,40 @@ void completion_thread(struct ibv_comp_channel *chan, promise_map &wc_promises)
 	int ret;
 	do {
 		ret = ibv_get_cq_event(chan, &cq, &context);
-		if (ret)
+		if (ret) {
+			perror("ibv_get_cq_event");
 			goto err;
+		}
 		event_cnt++;
 		ret = ibv_req_notify_cq(cq, 0);
-		if (ret)
+		if (ret) {
+			perror("ibv_req_notify_cq");
 			goto err;
+		}
 		ret = ibv_poll_cq(cq, max_wc_count, wc);
-		if (ret < 0)
+		if (ret < 0) {
+			perror("ibv_poll_cq");
 			goto err;
+		}
 		for (int i = 0; i < ret; i++) {
-			if (wc->status == IBV_WC_WR_FLUSH_ERR)
+			if (wc->status == IBV_WC_WR_FLUSH_ERR) {
+				std::cerr << "flush err\n";
 				goto err;
+			}
 			auto msg = reinterpret_cast<union MessageBuf *>(wc->wr_id);
 			auto req_id = big_to_native(msg->hdr.req_id);
 			auto iter = wc_promises.find(req_id);
 			if (iter != wc_promises.end()) {
 				if (!wc->status) {
 					iter->second.set_value(msg);
+				} else {
+					std::cerr << format("Completion %x error %x\n")
+						% wc->wr_id % wc->status;
 				}
 				wc_promises.erase(iter);
 			} else {
-				std::cerr << format("Unexpected message with opcode %u and req_id %x")
-					% msg->hdr.opcode % req_id;
+				std::cerr << format("Unexpected message with opcode %u and req_id %x\n")
+					% wc->opcode % req_id;
 			}
 		}
 	} while (1);
@@ -223,6 +230,7 @@ void run(const char *local_ip, const char *cluster_id_str)
 	std::cerr << format("server is at %s\n") % host;
 
 	auto *cs = new ClientConnState;
+	cs->next_req_id = 0;
 
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_flags = 0;
@@ -245,19 +253,17 @@ void run(const char *local_ip, const char *cluster_id_str)
 	}
 
 	ibv_req_notify_cq(cs->id->send_cq, 0);
-	promise_map send_wc_promises;
 	std::thread send_cq_thread{completion_thread,
 				   cs->id->send_cq_channel,
-				   std::ref(send_wc_promises)};
+				   std::ref(cs->send_wc_promises)};
 	ibv_req_notify_cq(cs->id->recv_cq, 0);
-	promise_map recv_wc_promises;
 	std::thread recv_cq_thread{completion_thread,
 				   cs->id->recv_cq_channel,
-				   std::ref(recv_wc_promises)};
+				   std::ref(cs->recv_wc_promises)};
 
 	msg_promise announce_promise;
 	msg_future announce_future = announce_promise.get_future();
-	recv_wc_promises.insert(std::make_pair(0, std::move(announce_promise)));
+	cs->recv_wc_promises.insert(std::make_pair(0, std::move(announce_promise)));
 
 	for (int i = 0; i < 32; i++) {
 		ret = rdma_post_recv(cs->id, cs->recv_bufs[i].buf,
@@ -281,7 +287,7 @@ void run(const char *local_ip, const char *cluster_id_str)
 	CHECK_PTR_ERRNO(cs->nextsend);
 	cs->nextsend->hdr.version = 0;
 	cs->nextsend->hdr.opcode = OPCODE_GETHDR_REQ;
-	auto req_id = cs->next_req_id++;
+	auto req_id = ++cs->next_req_id;
 	native_to_big_inplace(cs->nextsend->gethdrreq.hdr.req_id = req_id);
 	native_to_big_inplace(cs->nextsend->gethdrreq.hdr.hostid = 0);
 	native_to_big_inplace(cs->nextsend->gethdrreq.uid = 1);
@@ -292,12 +298,13 @@ void run(const char *local_ip, const char *cluster_id_str)
 
 	msg_promise gethdrresp_promise;
 	msg_future gethdrresp_future = gethdrresp_promise.get_future();
-	recv_wc_promises.insert(std::make_pair(req_id, std::move(gethdrresp_promise)));
+	std::cerr << format("push req_id %x\n") % req_id;
+	cs->recv_wc_promises.insert(std::make_pair(req_id, std::move(gethdrresp_promise)));
 	CHECK_ERRNO(rdma_post_send(cs->id, cs->nextsend, cs->nextsend,
 				   sizeof(*cs->nextsend),
 				   cs->send_mr, IBV_SEND_SIGNALED));
 
-	process_gethdrresp(cs, &announce_future.get()->gethdrresp);
+	process_gethdrresp(cs, &gethdrresp_future.get()->gethdrresp);
 }
 
 }
