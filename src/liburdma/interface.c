@@ -705,7 +705,7 @@ finish_post_cqe(struct usiw_cq *cq, struct usiw_wc *cqe)
 	struct usiw_context *ctx;
 	ssize_t ret;
 
-	RTE_LOG(NOTICE, USER1, "Post CQE with opcode %d\n",
+	RTE_LOG(DEBUG, USER1, "Post CQE with opcode %d\n",
 			cqe->opcode);
 	ret = rte_ring_enqueue(cq->cqe_ring, cqe);
 	assert(ret == 0);
