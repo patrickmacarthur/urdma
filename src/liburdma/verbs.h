@@ -55,6 +55,10 @@
 #define URDMA_DEVICE_VENDOR_ID		0x626d74
 #define URDMA_DEVICE_VENDOR_PART_ID	0x0816
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 struct urdma_ah {
 	struct ether_addr ether_addr;
 	uint16_t udp_port;
@@ -121,8 +125,8 @@ urdma_accl_post_read(struct ibv_qp *qp, void *addr, size_t length,
 		uint32_t rkey, void *context);
 
 void
-urdma_query_qp_stats(const struct ibv_qp *restrict qp,
-		struct urdma_qp_stats *restrict stats);
+urdma_query_qp_stats(const struct ibv_qp * qp,
+		struct urdma_qp_stats *stats);
 
 void
 urdma_free_qp_stats_ex(struct urdma_qp_stats_ex *stats);
@@ -150,5 +154,9 @@ urdma_remote_lock(struct ibv_qp *ib_qp, void *local_addr,
 int
 urdma_remote_unlock(struct ibv_qp *ib_qp, void *local_addr,
 		  uint64_t remote_addr, uint32_t rkey, void *context);
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
 
 #endif

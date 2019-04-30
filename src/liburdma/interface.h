@@ -107,6 +107,7 @@ struct rdma_qp_lock {
 	uint8_t waitcount;
 	uint16_t reserved_2;
 	uint32_t qpn;
+	uint64_t next;
 };
 
 struct arp_entry {
@@ -344,7 +345,7 @@ struct usiw_qp {
 	struct usiw_mr_table *pd;
 
 	struct ee_state remote_ep;
-	struct list_head qp_lock_list;
+	struct rdma_qp_lock *lock_list_head;
 
 	struct ibv_qp ib_qp;
 };

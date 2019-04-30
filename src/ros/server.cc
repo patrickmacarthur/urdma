@@ -8,6 +8,9 @@
 
 #include <exception>
 #include <iostream>
+#include <map>
+#include <mutex>
+#include <queue>
 #include <thread>
 
 #include <boost/dynamic_bitset.hpp>
@@ -55,8 +58,6 @@ struct ROSPoolHeader {
 struct ROSObjectHeader {
 	struct RDMALock lock;
 	uint64_t uid;
-	uint32_t replica_hostid1;
-	uint32_t replica_hostid2;
 	uint32_t refcnt;
 	uint32_t version;
 };
@@ -75,7 +76,6 @@ static_assert(sizeof(struct MessageHeader) == 8, "incorrect size for MessageHead
 static_assert(offsetof(struct AnnounceMessage, reserved28) == 28, "wrong offset for reserved28");
 static_assert(sizeof(struct AnnounceMessage) == 32, "incorrect size for LockAnnounceMessage");
 static_assert(sizeof(struct GetHdrRequest) == 16, "incorrect size for GetHdrRequest");
-static_assert(offsetof(struct GetHdrResponse, reserved36) == 36, "wrong offset for reserved36");
 static_assert(sizeof(struct GetHdrResponse) == 40, "incorrect size for GetHdrResponse");
 
 namespace {
@@ -91,9 +91,26 @@ struct ConnState {
 
 struct AnnounceMessage *announcemsg;
 
+struct ROSRPCLock {
+	uint32_t key;
+	bool val;
+	std::queue<std::pair<struct ConnState *, struct LockRequest>> queue;
+	std::mutex mutex;
+};
+
+std::map<uint64_t, struct ROSRPCLock> ros_rpc_locks;
+
 uint64_t make_obj_id(size_t idx)
 {
 	return hostid << 32 + 1 << 16 + idx;
+}
+
+struct ROSObjectHeader *get_obj_addr(uint64_t uid)
+{
+	unsigned int idx = uid & 0xffff;
+	return reinterpret_cast<struct ROSObjectHeader *>(
+			reinterpret_cast<uintptr_t>(pool_base)
+			+ idx * page_size);
 }
 
 void process_announce(struct ConnState *cs, struct AnnounceMessage *msg)
@@ -105,17 +122,17 @@ void process_gethdrreq(struct ConnState *cs, struct GetHdrRequest *msg)
 {
 	std::cerr << format("gethdr request for object %x\n")
 			% big_to_native(msg->uid);
+
 	cs->send_buf = reinterpret_cast<union MessageBuf *>(
 			aligned_alloc(CACHE_LINE_SIZE, sizeof(*cs->send_buf)));
 	cs->send_buf->hdr.version = 0;
 	cs->send_buf->hdr.opcode = OPCODE_GETHDR_RESP;
 	cs->send_buf->gethdrresp.hdr.req_id = msg->hdr.req_id;
 	native_to_big_inplace(cs->send_buf->gethdrresp.hdr.hostid = hostid);
-	native_to_big_inplace(cs->send_buf->gethdrresp.replica_hostid1 = 0);
-	native_to_big_inplace(cs->send_buf->gethdrresp.replica_hostid2 = 0);
 	native_to_big_inplace(cs->send_buf->gethdrresp.addr = (uintptr_t)root_obj);
 	native_to_big_inplace(cs->send_buf->gethdrresp.rkey = pool_mr->rkey);
-	native_to_big_inplace(cs->send_buf->gethdrresp.reserved36 = 0);
+	native_to_big_inplace(cs->send_buf->gethdrresp.lock_id = (uintptr_t)(&root_obj->lock));
+	native_to_big_inplace(cs->send_buf->gethdrresp.lock_key = pool_mr->rkey);
 
 	int ret = rdma_post_send(cs->id, cs,
 			     reinterpret_cast<void *>(cs->send_buf),
@@ -148,14 +165,163 @@ void process_allocreq(struct ConnState *cs, struct AllocRequest *msg)
 	cs->send_buf->gethdrresp.hdr.req_id = msg->hdr.req_id;
 	native_to_big_inplace(alloc_msg->hdr.hostid = hostid);
 	native_to_big_inplace(alloc_msg->uid = newobj->uid);
-	native_to_big_inplace(alloc_msg->replica_hostid1 = 0);
-	native_to_big_inplace(alloc_msg->replica_hostid2 = 0);
-	native_to_big_inplace(alloc_msg->addr = (uintptr_t)root_obj);
+	native_to_big_inplace(alloc_msg->addr = (uintptr_t)newobj
+							+ sizeof(*newobj));
+	native_to_big_inplace(alloc_msg->lock_id = (uintptr_t)(&newobj->lock));
+	native_to_big_inplace(alloc_msg->lock_key = pool_mr->rkey);
 
 	int ret = rdma_post_send(cs->id, cs,
 			     reinterpret_cast<void *>(cs->send_buf),
 			     sizeof(*cs->send_buf), NULL,
 			     IBV_SEND_SIGNALED|IBV_SEND_INLINE);
+}
+
+void process_lockpollreq(struct ConnState *cs, struct LockRequest *lockreq)
+{
+	auto iter = ros_rpc_locks.find(big_to_native(lockreq->lock_id));
+	if (iter == ros_rpc_locks.end())
+		/* FIXME: tell client addr is invalid */
+		std::cerr << format("client requested invalid lock %x")
+			% big_to_native(lockreq->lock_id);
+		return;
+
+	struct ROSRPCLock *lock = &iter->second;
+	if (lock->key != big_to_native(lockreq->lock_key)) {
+		/* FIXME: tell client key is invalid */
+		std::cerr << format("client requested invalid key %x for lock %x")
+			% big_to_native(lockreq->lock_key)
+			% big_to_native(lockreq->lock_id);
+		return;
+	}
+
+	bool status;
+	{
+		std::lock_guard<std::mutex> guard{lock->mutex};
+		if (!lock->queue.empty()) {
+			status = false;
+		} else {
+			status = lock->val;
+			if (!lock->val) {
+				lock->val = true;
+			}
+		}
+	}
+
+	auto resp = reinterpret_cast<struct LockResponse *>(
+			aligned_alloc(CACHE_LINE_SIZE, sizeof(*cs->send_buf)));
+	resp->hdr.version = 0;
+	resp->hdr.opcode = OPCODE_LOCK_RESP;
+	resp->hdr.req_id = lockreq->hdr.req_id;
+	native_to_big_inplace(resp->hdr.hostid = hostid);
+	resp->lock_id = lockreq->lock_id;
+	native_to_big_inplace(resp->status = status);
+
+	int ret = rdma_post_send(cs->id, cs,
+			reinterpret_cast<void *>(resp),
+			sizeof(*resp), NULL,
+			IBV_SEND_SIGNALED|IBV_SEND_INLINE);
+}
+
+bool do_queued_lock(struct ConnState *cs, struct LockRequest *lockreq,
+			struct ROSRPCLock *lock) {
+	if (!lock->val) {
+		lock->val = true;
+	} else {
+		return false;
+	}
+
+	auto resp = reinterpret_cast<struct LockResponse *>(
+			aligned_alloc(CACHE_LINE_SIZE, sizeof(*cs->send_buf)));
+	resp->hdr.version = 0;
+	resp->hdr.opcode = OPCODE_LOCK_RESP;
+	resp->hdr.req_id = lockreq->hdr.req_id;
+	native_to_big_inplace(resp->hdr.hostid = hostid);
+	resp->lock_id = lockreq->lock_id;
+	native_to_big_inplace(resp->status = 0);
+
+	int ret = rdma_post_send(cs->id, cs,
+			reinterpret_cast<void *>(resp),
+			sizeof(*resp), NULL,
+			IBV_SEND_SIGNALED|IBV_SEND_INLINE);
+	return true;
+}
+
+void process_lockqueuereq(struct ConnState *cs, struct LockRequest *lockreq)
+{
+	auto iter = ros_rpc_locks.find(big_to_native(lockreq->lock_id));
+	if (iter == ros_rpc_locks.end())
+		/* FIXME: tell client addr is invalid */
+		std::cerr << format("client requested invalid lock %x")
+			% big_to_native(lockreq->lock_id);
+		return;
+
+	struct ROSRPCLock *lock = &iter->second;
+	if (lock->key != big_to_native(lockreq->lock_key)) {
+		/* FIXME: tell client key is invalid */
+		std::cerr << format("client requested invalid key %x for lock %x")
+			% big_to_native(lockreq->lock_key)
+			% big_to_native(lockreq->lock_id);
+		return;
+	}
+
+	bool status;
+	{
+		std::lock_guard<std::mutex> guard{lock->mutex};
+		if (!lock->queue.empty() || lock->val ||
+				!do_queued_lock(cs, lockreq, lock)) {
+			lock->queue.push(std::make_pair(cs,
+						std::move(*lockreq)));
+		}
+	}
+}
+
+void process_unlockreq(struct ConnState *cs, struct LockRequest *lockreq)
+{
+	auto iter = ros_rpc_locks.find(big_to_native(lockreq->lock_id));
+	if (iter == ros_rpc_locks.end())
+		/* FIXME: tell client addr is invalid */
+		std::cerr << format("client requested unlock for invalid lock %x")
+			% big_to_native(lockreq->lock_id);
+		return;
+
+	struct ROSRPCLock *lock = &iter->second;
+	if (lock->key != big_to_native(lockreq->lock_key)) {
+		/* FIXME: tell client key is invalid */
+		std::cerr << format("client had invalid key %x for lock %x (unlock)")
+			% big_to_native(lockreq->lock_key)
+			% big_to_native(lockreq->lock_id);
+		return;
+	}
+
+	{
+		std::lock_guard<std::mutex> guard{lock->mutex};
+		if (!lock->val) {
+			/* FIXME: tell this to the client and kill its
+			 * connection */
+			std::cerr << format("client tried to unlock lock %x but didn't own it")
+				% big_to_native(lockreq->lock_id);
+			return;
+		}
+		lock->val = false;
+		if (!lock->queue.empty()) {
+			auto next = lock->queue.front();
+			do_queued_lock(next.first, &next.second, lock);
+		}
+	}
+
+	auto resp = reinterpret_cast<struct LockResponse *>(
+			aligned_alloc(CACHE_LINE_SIZE, sizeof(*cs->send_buf)));
+	resp->hdr.version = 0;
+	resp->hdr.opcode = OPCODE_LOCK_RESP;
+	resp->hdr.req_id = lockreq->hdr.req_id;
+	native_to_big_inplace(resp->hdr.hostid = hostid);
+	resp->lock_id = lockreq->lock_id;
+	native_to_big_inplace(resp->status = 0);
+
+	int ret = rdma_post_send(cs->id, cs,
+			reinterpret_cast<void *>(resp),
+			sizeof(*resp), NULL,
+			IBV_SEND_SIGNALED|IBV_SEND_INLINE);
 }
 
 void process_wc(struct ConnState *cs, struct ibv_wc *wc)
@@ -174,6 +340,15 @@ void process_wc(struct ConnState *cs, struct ibv_wc *wc)
 		break;
 	case OPCODE_ALLOC_REQ:
 		process_allocreq(cs, &mb->allocreq);
+		break;
+	case OPCODE_LOCK_POLL_REQ:
+		process_lockpollreq(cs, &mb->lockreq);
+		break;
+	case OPCODE_LOCK_QUEUE_REQ:
+		process_lockqueuereq(cs, &mb->lockreq);
+		break;
+	case OPCODE_UNLOCK_REQ:
+		process_unlockreq(cs, &mb->lockreq);
 		break;
 	default:
 		return;

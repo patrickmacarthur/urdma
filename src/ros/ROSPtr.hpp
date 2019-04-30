@@ -113,7 +113,7 @@ ROSPtr<T>::Handle::Handle(ROSPtr<T> *parent) : parent(parent)
 
 	msg_promise send_promise;
 	msg_future send_future = send_promise.get_future();
-	cs->recv_wc_promises.insert(make_pair(req_id, send_promise));
+	cs->recv_wc_promises.insert(make_pair(req_id, std::move(send_promise)));
 	CHECK_ERRNO(rdma_post_send(cs->id, cs->nextsend, cs->nextsend,
 				   sizeof(*cs->nextsend),
 				   nullptr, IBV_SEND_SIGNALED|IBV_SEND_INLINE));

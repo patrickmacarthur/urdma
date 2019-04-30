@@ -5,6 +5,7 @@
 #ifndef ROS_H
 #define ROS_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -27,6 +28,10 @@ enum {
 	OPCODE_ALLOC_RESP,
 	OPCODE_FREE_REQ,
 	OPCODE_FREE_RESP,
+	OPCODE_LOCK_POLL_REQ,
+	OPCODE_LOCK_QUEUE_REQ,
+	OPCODE_UNLOCK_REQ,
+	OPCODE_LOCK_RESP,
 };
 
 struct MessageHeader {
@@ -59,11 +64,10 @@ struct GetHdrRequest {
 struct GetHdrResponse {
 	struct MessageHeader hdr;
 	uint64_t uid;
-	uint32_t replica_hostid1;
-	uint32_t replica_hostid2;
 	uint64_t addr;
 	uint32_t rkey;
-	uint32_t reserved36;
+	uint32_t lock_key;
+	uint64_t lock_id;
 };
 
 struct AllocRequest {
@@ -74,11 +78,22 @@ struct AllocRequest {
 struct AllocResponse {
 	struct MessageHeader hdr;
 	uint32_t status;
-	uint32_t reserved12;
+	uint32_t lock_key;
 	uint64_t uid;
-	uint32_t replica_hostid1;
-	uint32_t replica_hostid2;
 	uint64_t addr;
+	uint64_t lock_id;
+};
+
+struct LockRequest {
+	struct MessageHeader hdr;
+	uint64_t lock_id;
+	uint32_t lock_key;
+};
+
+struct LockResponse {
+	struct MessageHeader hdr;
+	uint64_t lock_id;
+	uint32_t status;
 };
 
 union MessageBuf {
@@ -89,6 +104,8 @@ union MessageBuf {
 	struct GetHdrResponse gethdrresp;
 	struct AllocRequest allocreq;
 	struct AllocResponse allocresp;
+	struct LockRequest lockreq;
+	struct LockResponse lockresp;
 	char buf[40];
 };
 

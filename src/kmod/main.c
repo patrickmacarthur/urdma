@@ -399,8 +399,6 @@ static int siw_device_register(struct siw_dev *sdev)
 	}
 	siw_debugfs_add_device(sdev);
 
-	sdev->attrs.vendor_part_id = dev_id++;
-
 	pr_debug(DBG_DM ": Interface '%s' for device '%s' up, HWaddr=%pM\n",
 			sdev->netdev->name, sdev->ofa_dev.name,
 			sdev->netdev->dev_addr);

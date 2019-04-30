@@ -1038,7 +1038,7 @@ do_rdmap_atomic(struct usiw_qp *qp, struct usiw_send_wqe *wqe)
 static void
 do_rdmap_lock(struct usiw_qp *qp, struct usiw_send_wqe *wqe)
 {
-	struct rdmap_atomicreq_packet *new_rdmap;
+	struct rdmap_lockreq_packet *new_rdmap;
 	struct rte_mbuf *sendmsg;
 	unsigned int packet_length;
 
@@ -1063,7 +1063,7 @@ do_rdmap_lock(struct usiw_qp *qp, struct usiw_send_wqe *wqe)
 	sendmsg = rte_pktmbuf_alloc(qp->dev->tx_ddp_mempool);
 
 	packet_length = sizeof(*new_rdmap);
-	new_rdmap = (struct rdmap_atomicreq_packet *)rte_pktmbuf_append(
+	new_rdmap = (struct rdmap_lockreq_packet *)rte_pktmbuf_append(
 				sendmsg, packet_length);
 	new_rdmap->untagged.head.ddp_flags = DDP_V1_UNTAGGED_LAST_DF;
 	new_rdmap->untagged.head.rdmap_info
@@ -1349,6 +1349,8 @@ do_qp_lock(struct usiw_qp *qp, struct rdma_qp_lock *target)
 				qp->shm_qp->dev_id, qp->shm_qp->qp_id);
 		target->lock = 1;
 		target->qpn = qp->ib_qp.qp_num;
+		target->next = (uintptr_t)qp->lock_list_head;
+		qp->lock_list_head = target;
 		return true;
 	} else {
 		target->waitcount++;
@@ -1360,6 +1362,8 @@ do_qp_lock(struct usiw_qp *qp, struct rdma_qp_lock *target)
 static bool
 do_qp_unlock(struct usiw_qp *qp, struct rdma_qp_lock *target)
 {
+	struct rdma_qp_lock **ptr;
+	bool success = true;
 	if (target->qpn != qp->ib_qp.qp_num || !target->lock) {
 		/* TERMINATE */
 		RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> UNLOCK failure: not locked or held by different QP\n",
@@ -1368,12 +1372,27 @@ do_qp_unlock(struct usiw_qp *qp, struct rdma_qp_lock *target)
 				rdmap_error_remote_stream_catastrophic);
 		return false;
 	}
+	ptr = &qp->lock_list_head;
+	while (*ptr != NULL && *ptr != target) {
+		ptr = (struct rdma_qp_lock **)&((*ptr)->next);
+	}
+	if (*ptr == NULL) {
+		/* TERMINATE */
+		RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> UNLOCK failure: lock not in \n",
+				qp->shm_qp->dev_id, qp->shm_qp->qp_id);
+		do_rdmap_terminate(qp, NULL,
+				rdmap_error_remote_stream_catastrophic);
+		success = false;
+	} else {
+		/* remove the entry from the list */
+		*ptr = (struct rdma_qp_lock *)(*ptr)->next;
+	}
 	target->lock = 0;
 	/* The next waiter will try to regain the lock when the loop goes
 	 * around the next time. */
 	RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> UNLOCK done\n",
 				qp->shm_qp->dev_id, qp->shm_qp->qp_id);
-	return true;
+	return success;
 }	/* do_qp_unlock */
 
 
@@ -2826,6 +2845,7 @@ start_qp(struct usiw_qp *qp)
 		goto free_txq;
 	}
 
+	qp->lock_list_head = NULL;
 	cur_state = usiw_qp_connected;
 	atomic_compare_exchange_strong(&qp->shm_qp->conn_state, &cur_state,
 				       usiw_qp_running);
@@ -2877,6 +2897,9 @@ kni_loop(void *arg)
 			}
 			list_for_each_safe(&ctx->qp_active, qp, qp_next, ctx_entry) {
 				switch (atomic_load(&qp->shm_qp->conn_state)) {
+				case usiw_qp_running:
+					progress_qp(qp);
+					break;
 				case usiw_qp_connected:
 					/* start_qp() transitions to
 					 * usiw_qp_running */
@@ -2885,9 +2908,6 @@ kni_loop(void *arg)
 							== usiw_qp_error) {
 						break;
 					}
-					/* fall-through */
-				case usiw_qp_running:
-					progress_qp(qp);
 					break;
 				case usiw_qp_shutdown:
 					qp_shutdown(qp);
