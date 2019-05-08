@@ -180,6 +180,7 @@ static int run(void)
 	pthread_attr_init(&thread_attr);
 	pthread_attr_setdetachstate(&thread_attr, PTHREAD_CREATE_DETACHED);
 
+	printf("wait for connection request\n");
 	while (1) {
 		ret = rdma_get_request(listen_id, &id);
 		if (ret) {
