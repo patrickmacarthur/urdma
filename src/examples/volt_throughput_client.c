@@ -62,7 +62,7 @@ static struct ibv_qp_init_attr qp_init_attr_template = {
 
 static struct rdma_addrinfo *addr_info;
 
-static int client_thread(void *arg)
+static int client_thread()
 {
 	struct ibv_qp_init_attr attr;
 	struct rdma_cm_id *id;
@@ -116,6 +116,10 @@ static int client_thread(void *arg)
 		ret = urdma_remote_lock(id->qp, &lock_status,
 					lock_msg.lock_addr,
 					lock_msg.lock_rkey, NULL);
+		if (ret < 0) {
+			fprintf(stderr, "urdma_remote_lock: %s\n", strerror(-ret));
+			goto out_disconnect;
+		}
 
 		while ((ret = rdma_get_send_comp(id, &wc)) == 0);
 		if (ret < 0) {
@@ -136,6 +140,10 @@ static int client_thread(void *arg)
 		ret = urdma_remote_unlock(id->qp, &lock_status,
 					  lock_msg.lock_addr, lock_msg.lock_rkey,
 					  NULL);
+		if (ret < 0) {
+			fprintf(stderr, "urdma_remote_unlock: %s\n", strerror(-ret));
+			goto out_disconnect;
+		}
 
 		while ((ret = rdma_get_send_comp(id, &wc)) == 0);
 		if (ret < 0) {
@@ -183,7 +191,7 @@ static int run(void)
 		goto out;
 	}
 
-	client_thread(NULL);
+	client_thread();
 
 out:
 	return 0;

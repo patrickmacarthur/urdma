@@ -1049,6 +1049,8 @@ do_rdmap_lock(struct usiw_qp *qp, struct usiw_send_wqe *wqe)
 	if (qp->ord_active >= qp->shm_qp->ord_max) {
 		/* Cannot issue more than ord_max simultaneous RDMA READ
 		 * and Atomic Requests. */
+		RTE_LOG(INFO, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> LOCKREQ too many RDMA READ requests\n",
+				qp->shm_qp->dev_id, qp->shm_qp->qp_id);
 		return;
 	} else if (wqe->remote_ep->send_next_psn
 			== wqe->remote_ep->send_max_psn
@@ -1056,6 +1058,8 @@ do_rdmap_lock(struct usiw_qp *qp, struct usiw_send_wqe *wqe)
 				wqe->remote_ep->send_max_psn)) {
 		/* We have reached the maximum number of credits we are allowed
 		 * to send. */
+		RTE_LOG(INFO, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> LOCKREQ not enough credits\n",
+				qp->shm_qp->dev_id, qp->shm_qp->qp_id);
 		return;
 	}
 	qp->ord_active++;
@@ -1079,7 +1083,7 @@ do_rdmap_lock(struct usiw_qp *qp, struct usiw_send_wqe *wqe)
 		rte_cpu_to_be_64((uintptr_t)wqe->remote_addr);
 
 	send_ddp_segment(qp, sendmsg, NULL, wqe, 0);
-	RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> LOCKREQ transmit msn=%" PRIu32 "\n",
+	RTE_LOG(INFO, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> LOCKREQ transmit msn=%" PRIu32 "\n",
 			qp->shm_qp->dev_id, qp->shm_qp->qp_id, wqe->msn);
 
 	wqe->state = SEND_WQE_WAIT;
