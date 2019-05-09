@@ -61,6 +61,7 @@ static struct ibv_qp_init_attr qp_init_attr_template = {
 };
 
 static struct rdma_addrinfo *addr_info;
+static pthread_barrier_t start_barrier;
 
 static double timespec_diff(struct timespec *start, struct timespec *end)
 {
@@ -71,7 +72,29 @@ static double timespec_diff(struct timespec *start, struct timespec *end)
 		/ (double)ns_per_s;
 }
 
-static int client_thread()
+static char *strerror_p(int errcode, char *buf, size_t bufsize) {
+#if !defined(HAVE_STRERROR_R)
+	static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+	char *err;
+	pthread_mutex_lock(&mutex);
+	err = strerror(errcode);
+	strncpy(buf, err, bufsize);
+	pthread_mutex_unlock(&mutex);
+	return buf;
+#elif defined(STRERROR_R_CHAR_P)
+	int ret = strerror_r(ret, errbuf, sizeof(errbuf));
+	if (ret)
+		snprintf(buf, bufsize, "Unknown error %d", errcode);
+	return buf;
+#else
+	int old_errno = errno;
+	char *ret = strerror_r(ret, errbuf, sizeof(errbuf));
+	errno = old_errno;
+	return ret;
+#endif
+}
+
+static void *client_thread(void *arg)
 {
 	struct timespec start_time, end_time;
 	struct ibv_qp_init_attr attr;
@@ -122,6 +145,7 @@ static int client_thread()
 		goto out_disconnect;
 	}
 
+	pthread_barrier_wait(&start_barrier);
 	clock_gettime(CLOCK_MONOTONIC, &start_time);
 	for (int i = 0; i < 1000000; i++) {
 		ret = urdma_remote_lock(id->qp, &lock_status,
@@ -187,34 +211,61 @@ out_dereg_recv:
 out_destroy_ep:
 	rdma_destroy_ep(id);
 out:
-	return ret;
+	return (void *)(uintptr_t)ret;
 }
 
-static int run(void)
+static int run(unsigned int thread_count)
 {
 	struct rdma_addrinfo hints;
-	pthread_t tid1, tid2;
+	char errbuf[128];
+	pthread_t threads[thread_count];
+	unsigned int i;
 	int ret;
+
+	ret = pthread_barrier_init(&start_barrier, NULL, thread_count);
+	if (ret) {
+		fprintf(stderr, "pthread_barrier_init: %s\n",
+				strerror_p(ret, errbuf, sizeof(errbuf)));
+		goto out;
+	}
 
 	memset(&hints, 0, sizeof hints);
 	hints.ai_port_space = RDMA_PS_TCP;
 	ret = rdma_getaddrinfo(server, port, &hints, &addr_info);
 	if (ret) {
 		printf("rdma_getaddrinfo: %s\n", gai_strerror(ret));
-		goto out;
+		goto destroy_barrier;
 	}
 
-	client_thread();
+	for (i = 0; i < thread_count; ++i) {
+		ret = pthread_create(&threads[i], NULL, &client_thread, NULL);
+		if (ret) {
+			fprintf(stderr, "error creating thread %i: %s\n", i,
+					strerror_p(ret, errbuf, sizeof(errbuf)));
+		}
+	}
 
+	for (i = 0; i < thread_count; ++i) {
+		ret = pthread_join(threads[i], NULL);
+		if (ret) {
+			fprintf(stderr, "error joining thread %i: %s\n", i,
+					strerror_p(ret, errbuf, sizeof(errbuf)));
+		}
+	}
+
+destroy_barrier:
+	pthread_barrier_destroy(&start_barrier);
 out:
 	return 0;
 }
 
 int main(int argc, char **argv)
 {
+	unsigned int thread_count = 1;
+	char *endch;
 	int op, ret;
 
-	while ((op = getopt(argc, argv, "s:p:")) != -1) {
+	while ((op = getopt(argc, argv, "s:p:t:")) != -1) {
 		switch (op) {
 		case 's':
 			server = optarg;
@@ -222,16 +273,25 @@ int main(int argc, char **argv)
 		case 'p':
 			port = optarg;
 			break;
+		case 't':
+			errno = 0;
+			thread_count = strtoul(optarg, &endch, 0);
+			if (errno || !thread_count || *endch) {
+				printf("invalid thread count \"%s\"\n", optarg);
+				exit(1);
+			}
+			break;
 		default:
 			printf("usage: %s\n", argv[0]);
 			printf("\t[-s server_address]\n");
 			printf("\t[-p port_number]\n");
+			printf("\t[-t thread_count] (default 1)\n");
 			exit(1);
 		}
 	}
 
 	printf("rdma_client: start\n");
-	ret = run();
+	ret = run(thread_count);
 	printf("rdma_client: end %d\n", ret);
 	return ret;
 }

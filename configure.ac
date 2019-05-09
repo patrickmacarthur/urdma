@@ -100,6 +100,8 @@ AC_PROG_MAKE_SET
 AM_PROG_CC_C_O
 AC_PROG_MKDIR_P
 
+AC_FUNC_STRERROR_R
+
 AC_ARG_VAR([KERNELDIR], [kernel source directory])
 AC_SUBST([KERNELDIR])
 AC_ARG_ENABLE([kmodinprefix], [AS_HELP_STRING([--enable-kmodinprefix],
