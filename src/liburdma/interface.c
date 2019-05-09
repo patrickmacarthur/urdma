@@ -1049,7 +1049,7 @@ do_rdmap_lock(struct usiw_qp *qp, struct usiw_send_wqe *wqe)
 	if (qp->ord_active >= qp->shm_qp->ord_max) {
 		/* Cannot issue more than ord_max simultaneous RDMA READ
 		 * and Atomic Requests. */
-		RTE_LOG(INFO, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> LOCKREQ too many RDMA READ requests\n",
+		RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> LOCKREQ too many RDMA READ requests\n",
 				qp->shm_qp->dev_id, qp->shm_qp->qp_id);
 		return;
 	} else if (wqe->remote_ep->send_next_psn
@@ -1058,7 +1058,7 @@ do_rdmap_lock(struct usiw_qp *qp, struct usiw_send_wqe *wqe)
 				wqe->remote_ep->send_max_psn)) {
 		/* We have reached the maximum number of credits we are allowed
 		 * to send. */
-		RTE_LOG(INFO, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> LOCKREQ not enough credits\n",
+		RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> LOCKREQ not enough credits\n",
 				qp->shm_qp->dev_id, qp->shm_qp->qp_id);
 		return;
 	}
@@ -1083,7 +1083,7 @@ do_rdmap_lock(struct usiw_qp *qp, struct usiw_send_wqe *wqe)
 		rte_cpu_to_be_64((uintptr_t)wqe->remote_addr);
 
 	send_ddp_segment(qp, sendmsg, NULL, wqe, 0);
-	RTE_LOG(INFO, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> LOCKREQ transmit msn=%" PRIu32 "\n",
+	RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> LOCKREQ transmit msn=%" PRIu32 "\n",
 			qp->shm_qp->dev_id, qp->shm_qp->qp_id, wqe->msn);
 
 	wqe->state = SEND_WQE_WAIT;
@@ -1284,13 +1284,13 @@ process_send(struct usiw_qp *qp, struct packet_context *orig)
 			 * message --- should never happen since TRP will not
 			 * give us a duplicate packet. */
 			expected_msn = list_top(&qp->rq0.active_head, struct usiw_recv_wqe, active)->msn;
-			RTE_LOG(INFO, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> Received msn=%" PRIu32 " but expected msn=%" PRIu32 "\n",
+			RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> Received msn=%" PRIu32 " but expected msn=%" PRIu32 "\n",
 					qp->shm_qp->dev_id, qp->shm_qp->qp_id,
 					msn, expected_msn);
 			do_rdmap_terminate(qp, orig,
 					ddp_error_untagged_invalid_msn);
 		} else {
-			RTE_LOG(INFO, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> Received SEND msn=%" PRIu32 " to empty receive queue\n",
+			RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> Received SEND msn=%" PRIu32 " to empty receive queue\n",
 					qp->dev->portid,
 					qp->shm_qp->rx_queue, msn);
 			assert(rte_ring_empty(qp->rq0.ring));
@@ -1681,7 +1681,7 @@ process_rdma_read_request(struct usiw_qp *qp, struct packet_context *orig)
 	msn = rte_be_to_cpu_32(rdmap->untagged.msn);
 	if (msn < orig->src_ep->expected_read_msn
 			|| msn >= qp->readresp_head_msn + qp->shm_qp->ird_max) {
-		RTE_LOG(INFO, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> RDMA READ failure: expected MSN in range [%" PRIu32 ", %" PRIu32 "] received %" PRIu32 "\n",
+		RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> RDMA READ failure: expected MSN in range [%" PRIu32 ", %" PRIu32 "] received %" PRIu32 "\n",
 				qp->shm_qp->dev_id, qp->shm_qp->qp_id,
 				orig->src_ep->expected_read_msn,
 				qp->readresp_head_msn + qp->shm_qp->ird_max,
@@ -1750,7 +1750,7 @@ process_atomic_request(struct usiw_qp *qp, struct packet_context *orig)
 	msn = rte_be_to_cpu_32(rdmap->untagged.msn);
 	if (msn < orig->src_ep->expected_read_msn
 			|| msn >= qp->readresp_head_msn + qp->shm_qp->ird_max) {
-		RTE_LOG(INFO, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> ATOMIC failure: expected MSN in range [%" PRIu32 ", %" PRIu32 "] received %" PRIu32 "\n",
+		RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> ATOMIC failure: expected MSN in range [%" PRIu32 ", %" PRIu32 "] received %" PRIu32 "\n",
 				qp->shm_qp->dev_id, qp->shm_qp->qp_id,
 				orig->src_ep->expected_read_msn,
 				qp->readresp_head_msn + qp->shm_qp->ird_max,
@@ -1831,7 +1831,7 @@ process_lock_request(struct usiw_qp *qp, struct packet_context *orig)
 	msn = rte_be_to_cpu_32(rdmap->untagged.msn);
 	if (msn < orig->src_ep->expected_read_msn
 			|| msn >= qp->readresp_head_msn + qp->shm_qp->ird_max) {
-		RTE_LOG(INFO, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> LOCK failure: expected MSN in range [%" PRIu32 ", %" PRIu32 "] received %" PRIu32 "\n",
+		RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> LOCK failure: expected MSN in range [%" PRIu32 ", %" PRIu32 "] received %" PRIu32 "\n",
 				qp->shm_qp->dev_id, qp->shm_qp->qp_id,
 				orig->src_ep->expected_read_msn,
 				qp->readresp_head_msn + qp->shm_qp->ird_max,
