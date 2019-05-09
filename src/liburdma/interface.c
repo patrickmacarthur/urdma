@@ -2682,7 +2682,7 @@ progress_qp(struct usiw_qp *qp)
 			 * try_complete_wqe() ensures that we do not complete an
 			 * RDMA READ request out of order. */
 			send_wqe = find_first_rdma_read_atomic(qp);
-			RTE_LOG(NOTICE, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> pulled read/atomic/lock request last for %p off queue\n",
+			RTE_LOG(DEBUG, USER1, "<dev=%" PRIx16 " qp=%" PRIx16 "> pulled read/atomic/lock request last for %p off queue\n",
 					qp->shm_qp->dev_id, qp->shm_qp->qp_id,
 					(void *)send_wqe);
 			if (!(WARN_ONCE(!send_wqe,
