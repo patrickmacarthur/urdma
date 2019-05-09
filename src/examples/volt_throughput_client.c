@@ -62,8 +62,18 @@ static struct ibv_qp_init_attr qp_init_attr_template = {
 
 static struct rdma_addrinfo *addr_info;
 
+static double timespec_diff(struct timespec *start, struct timespec *end)
+{
+	static const unsigned long ns_per_s = 1000000000L;
+	int carry = (end->tv_nsec < start->tv_nsec) ? 1 : 0;
+	return (end->tv_sec - start->tv_sec - carry)
+		+ (carry * ns_per_s + end->tv_nsec - start->tv_nsec)
+		/ (double)ns_per_s;
+}
+
 static int client_thread()
 {
+	struct timespec start_time, end_time;
 	struct ibv_qp_init_attr attr;
 	struct rdma_cm_id *id;
 	struct ibv_mr *mr, *send_mr;
@@ -112,6 +122,7 @@ static int client_thread()
 		goto out_disconnect;
 	}
 
+	clock_gettime(CLOCK_MONOTONIC, &start_time);
 	for (int i = 0; i < 1000000; i++) {
 		ret = urdma_remote_lock(id->qp, &lock_status,
 					lock_msg.lock_addr,
@@ -159,8 +170,10 @@ static int client_thread()
 					wc.opcode);
 		}
 	}
+	clock_gettime(CLOCK_MONOTONIC, &end_time);
 
-	printf("client done\n");
+	printf("client done; took %0.3lf seconds\n",
+			timespec_diff(&start_time, &end_time));
 	fflush(stdout);
 
 
