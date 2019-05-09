@@ -171,7 +171,7 @@ static int run(void)
 		goto out_free_addrinfo;
 	}
 
-	ret = rdma_listen(listen_id, 0);
+	ret = rdma_listen(listen_id, 64);
 	if (ret) {
 		perror("rdma_listen");
 		goto out_destroy_listen_ep;
