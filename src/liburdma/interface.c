@@ -1909,7 +1909,8 @@ try_complete_wqe(struct usiw_qp *qp, struct usiw_send_wqe *wqe)
 		}
 		rte_spinlock_unlock(&qp->sq.lock);
 		if (wqe->opcode == usiw_wr_read
-				|| wqe->opcode == usiw_wr_atomic) {
+				|| wqe->opcode == usiw_wr_atomic
+				|| wqe->opcode == usiw_wr_lock) {
 			assert(qp->ord_active > 0);
 			qp->ord_active--;
 		}
