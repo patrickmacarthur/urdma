@@ -195,7 +195,7 @@ static bool do_lock_atomic(struct rdma_cm_id *id, uint64_t lock_id, uint32_t loc
 					wc.opcode, IBV_WC_COMP_SWAP);
 			return false;
 		}
-	} while (target != 0);
+	} while (target == 0);
 
 	return true;
 }
