@@ -37,6 +37,7 @@
 #include <errno.h>
 #include <getopt.h>
 #include <netdb.h>
+#include <infiniband/ib.h>
 #include <rdma/rdma_cma.h>
 #include <rdma/rdma_verbs.h>
 #include "verbs.h"
@@ -54,13 +55,35 @@ struct lock_announce_message {
 
 static void *agent_thread(void *arg)
 {
+	struct sockaddr *sa;
 	struct rdma_cm_id *id = arg;
 	struct lock_announce_message lock_msg;
 	struct ibv_qp_init_attr init_attr;
 	struct ibv_qp_attr qp_attr;
 	struct ibv_mr *lock_mr, *send_mr, *recv_mr;
 	struct ibv_wc wc;
-	int send_flags, ret;
+	char peerhost[40], peerport[6];
+	int socklen, send_flags, ret;
+
+	sa = rdma_get_peer_addr(id);
+	switch (sa->sa_family) {
+	case AF_INET:
+		socklen = sizeof(struct sockaddr_in);
+		break;
+	case AF_INET6:
+		socklen = sizeof(struct sockaddr_in6);
+		break;
+	case AF_IB:
+		socklen = sizeof(struct sockaddr_ib);
+		break;
+	default:
+		socklen = sizeof(struct sockaddr);
+		break;
+	}
+	getnameinfo(sa, socklen, peerhost, sizeof(peerhost),
+			peerport, sizeof(peerport),
+			NI_NUMERICHOST|NI_NUMERICSERV);
+	printf("Got connect request from client: %s:%s\n", peerhost, peerport);
 
 	memset(&qp_attr, 0, sizeof qp_attr);
 	memset(&init_attr, 0, sizeof init_attr);
@@ -121,6 +144,14 @@ static void *agent_thread(void *arg)
 
 	do {
 		while ((ret = rdma_get_recv_comp(id, &wc)) == 0);
+		if (wc.status != IBV_WC_SUCCESS) {
+			if (wc.status != IBV_WC_WR_FLUSH_ERR) {
+				fprintf(stderr, "got unexpected WC result from client %s:%s: %s\n",
+						peerhost, peerport,
+						ibv_wc_status_str(wc.status));
+			}
+			break;
+		}
 	} while (ret >= 0);
 	if (ret < 0) {
 		perror("rdma_get_recv_comp");
@@ -129,6 +160,7 @@ static void *agent_thread(void *arg)
 
 out_disconnect:
 	rdma_disconnect(id);
+	printf("Got disconnect from client: %s:%s\n", peerhost, peerport);
 out_dereg_send:
 	if ((send_flags & IBV_SEND_INLINE) == 0)
 		rdma_dereg_mr(send_mr);
@@ -180,7 +212,6 @@ static int run(void)
 	pthread_attr_init(&thread_attr);
 	pthread_attr_setdetachstate(&thread_attr, PTHREAD_CREATE_DETACHED);
 
-	printf("wait for connection request\n");
 	while (1) {
 		ret = rdma_get_request(listen_id, &id);
 		if (ret) {
