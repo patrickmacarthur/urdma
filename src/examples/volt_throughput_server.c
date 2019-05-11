@@ -40,6 +40,7 @@
 #include <infiniband/ib.h>
 #include <rdma/rdma_cma.h>
 #include <rdma/rdma_verbs.h>
+#include <semaphore.h>
 #include "verbs.h"
 
 #define CACHE_LINE_SIZE 64
@@ -47,6 +48,7 @@
 static const char *server = "127.0.0.1";
 static const char *port = "7471";
 
+sem_t lock_sem;
 static uint8_t lock_storage[8];
 
 enum opcode {
@@ -196,13 +198,43 @@ static void *agent_thread(void *arg)
 		if (wc.opcode == IBV_WC_RECV) {
 			uint64_t *lock_ptr = (void *)&lock_storage;
 			switch (ntohl(ctx->recv_msg->opcode)) {
+			case op_lock_queue:
+				ctx->send_msg->opcode = htonl(op_lock_response);
+				ret = sem_wait(&lock_sem);
+				if (ret < 0) {
+					perror("sem_wait");
+					goto out_disconnect;
+				}
+				*lock_ptr = 1;
+				ctx->send_msg->lock_rkey = htonl(0);
+
+				ret = rdma_post_recv(id, NULL, ctx->recv_msg, 16, ctx->recv_mr);
+				if (ret) {
+					perror("rdma_post_recv");
+					goto out_disconnect;
+				}
+
+				ret = rdma_post_send(id, NULL, ctx->send_msg,
+						sizeof(*ctx->send_msg), ctx->send_mr,
+						send_flags);
+				if (ret) {
+					perror("rdma_post_send");
+					goto out_disconnect;
+				}
+				ret = rdma_get_send_comp(id, &wc);
+				if (ret < 0) {
+					perror("rdma_get_send_comp");
+					goto out_disconnect;
+				}
+				break;
 			case op_lock_poll:
 				ctx->send_msg->opcode = htonl(op_lock_response);
-				if (*lock_ptr == 0) {
-					*lock_ptr = 1;
-					ctx->send_msg->lock_rkey = htonl(0);
-				} else {
+				ret = sem_trywait(&lock_sem);
+				if (ret < 0 && errno == EINTR) {
 					ctx->send_msg->lock_rkey = htonl(1);
+				} else {
+					ctx->send_msg->lock_rkey = htonl(0);
+					*lock_ptr = 1;
 				}
 
 				ret = rdma_post_recv(id, NULL, ctx->recv_msg, 16, ctx->recv_mr);
@@ -232,6 +264,7 @@ static void *agent_thread(void *arg)
 				} else {
 					ctx->send_msg->lock_rkey = htonl(1);
 				}
+				sem_post(&lock_sem);
 
 				ret = rdma_post_recv(id, NULL, ctx->recv_msg, 16, ctx->recv_mr);
 				if (ret) {
@@ -337,6 +370,7 @@ int main(int argc, char **argv)
 {
 	int op, ret;
 
+	sem_init(&lock_sem, 0, 1);
 	while ((op = getopt(argc, argv, "s:p:")) != -1) {
 		switch (op) {
 		case 's':

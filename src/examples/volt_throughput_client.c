@@ -269,14 +269,69 @@ static bool do_unlock_rpcpoll(struct context *ctx, uint64_t lock_id, uint32_t lo
 
 static bool do_lock_rpcqueue(struct context *ctx, uint64_t lock_id, uint32_t lock_key)
 {
-	fprintf(stderr, "rpcqueue not implemented\n");
-	return false;
+	struct ibv_wc wc;
+	struct ibv_sge sge;
+	int ret;
+
+	ctx->send_msg->opcode = htonl(op_lock_poll);
+	ctx->send_msg->lock_rkey = ctx->lock_key;
+	ctx->send_msg->lock_addr = ctx->lock_id;
+
+	ret = rdma_post_send(ctx->id, NULL, ctx->send_msg,
+			sizeof(*ctx->send_msg), ctx->send_mr,
+			ctx->send_flags);
+	if (ret < 0) {
+		fprintf(stderr, "urdma_remote_lock: %s\n", strerror(-ret));
+		return false;
+	}
+
+	while ((ret = rdma_get_send_comp(ctx->id, &wc)) == 0);
+	if (ret < 0) {
+		perror("rdma_get_send_comp");
+		return false;
+	}
+	if (wc.status != IBV_WC_SUCCESS) {
+		fprintf(stderr, "Client 1 Got unexpected wc status %x not 0\n",
+				wc.status);
+		return false;
+	}
+	if (wc.opcode != IBV_WC_SEND) {
+		fprintf(stderr, "Client 1 Got unexpected wc opcode %d not IBV_WC_SEND (%d)\n",
+				wc.opcode, IBV_WC_SEND);
+		return false;
+	}
+	while ((ret = rdma_get_recv_comp(ctx->id, &wc)) == 0);
+	if (ret < 0) {
+		perror("rdma_get_recv_comp");
+		return false;
+	}
+	if (wc.status != IBV_WC_SUCCESS) {
+		fprintf(stderr, "Client 1 Got unexpected wc status %x not 0\n",
+				wc.status);
+		return false;
+	}
+	if (wc.opcode != IBV_WC_RECV) {
+		fprintf(stderr, "Client 1 Got unexpected wc opcode %d not IBV_WC_RECV (%d)\n",
+				wc.opcode, IBV_WC_RECV);
+		return false;
+	}
+	if (ctx->recv_msg->lock_rkey != 0) {
+		fprintf(stderr, "Client got failure for queue lock!!!!\n");
+		return false;
+	}
+
+	ret = rdma_post_recv(ctx->id, NULL, ctx->recv_msg, sizeof(*ctx->recv_msg), ctx->recv_mr);
+	if (ret) {
+		perror("rdma_post_recv");
+		return false;
+	}
+
+	return true;
 }
 
 static bool do_unlock_rpcqueue(struct context *ctx, uint64_t lock_id, uint32_t lock_key)
 {
-	fprintf(stderr, "rpcqueue not implemented\n");
-	return false;
+	return do_unlock_rpcpoll(ctx, lock_id, lock_key);
 }
 
 static bool do_lock_atomic(struct context *ctx, uint64_t lock_id, uint32_t lock_key)
