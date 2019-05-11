@@ -44,6 +44,8 @@
 #include <rdma/rdma_verbs.h>
 #include "verbs.h"
 
+#define CACHE_LINE_SIZE 64
+
 enum {
 	MODE_POLL,
 	MODE_QUEUE,
@@ -52,10 +54,11 @@ enum {
 	MODE_COUNT
 };
 
+struct context;
 struct mode {
 	const char *name;
-	bool (*lock)(struct rdma_cm_id *, uint64_t, uint32_t);
-	bool (*unlock)(struct rdma_cm_id *, uint64_t, uint32_t);
+	bool (*lock)(struct context *, uint64_t, uint32_t);
+	bool (*unlock)(struct context *, uint64_t, uint32_t);
 };
 
 #define DEFAULT_CYCLE_COUNT 100000
@@ -63,14 +66,31 @@ struct mode {
 
 struct context {
 	struct rdma_addrinfo *addr_info;
+	struct rdma_cm_id *id;
 	const struct mode *mode;
 	unsigned long cycle_count;
 	struct lock_ops *ops;
+	struct lock_message *send_msg;
+	struct ibv_mr *send_mr;
+	struct lock_message *recv_msg;
+	struct ibv_mr *recv_mr;
+	uint64_t lock_id;
+	uint32_t lock_key;
+	int send_flags;
 };
 
-struct lock_announce_message {
-	uint64_t lock_addr;
+enum opcode {
+	op_announce,
+	op_lock_poll,
+	op_lock_queue,
+	op_unlock,
+	op_lock_response,
+};
+
+struct lock_message {
+	uint32_t opcode;
 	uint32_t lock_rkey;
+	uint64_t lock_addr;
 };
 
 static const char *server = "127.0.0.1";
@@ -127,31 +147,139 @@ static char *strerror_p(int errcode, char *buf, size_t bufsize) {
 #endif
 }
 
-static bool do_lock_rpcpoll(struct rdma_cm_id *id, uint64_t lock_id, uint32_t lock_key)
+static bool do_lock_rpcpoll(struct context *ctx, uint64_t lock_id, uint32_t lock_key)
 {
-	fprintf(stderr, "rpcpoll not implemented\n");
-	return false;
+	struct ibv_wc wc;
+	struct ibv_sge sge;
+	bool result;
+	int ret;
+
+	do {
+		ctx->send_msg->opcode = htonl(op_lock_poll);
+		ctx->send_msg->lock_rkey = ctx->lock_key;
+		ctx->send_msg->lock_addr = ctx->lock_id;
+
+		ret = rdma_post_send(ctx->id, NULL, ctx->send_msg,
+				sizeof(*ctx->send_msg), ctx->send_mr,
+				ctx->send_flags);
+		if (ret < 0) {
+			fprintf(stderr, "urdma_remote_lock: %s\n", strerror(-ret));
+			return false;
+		}
+
+		while ((ret = rdma_get_send_comp(ctx->id, &wc)) == 0);
+		if (ret < 0) {
+			perror("rdma_get_send_comp");
+			return false;
+		}
+		if (wc.status != IBV_WC_SUCCESS) {
+			fprintf(stderr, "Client 1 Got unexpected wc status %x not 0\n",
+					wc.status);
+			return false;
+		}
+		if (wc.opcode != IBV_WC_SEND) {
+			fprintf(stderr, "Client 1 Got unexpected wc opcode %d not IBV_WC_SEND (%d)\n",
+					wc.opcode, IBV_WC_SEND);
+			return false;
+		}
+		while ((ret = rdma_get_recv_comp(ctx->id, &wc)) == 0);
+		if (ret < 0) {
+			perror("rdma_get_recv_comp");
+			return false;
+		}
+		if (wc.status != IBV_WC_SUCCESS) {
+			fprintf(stderr, "Client 1 Got unexpected wc status %x not 0\n",
+					wc.status);
+			return false;
+		}
+		if (wc.opcode != IBV_WC_RECV) {
+			fprintf(stderr, "Client 1 Got unexpected wc opcode %d not IBV_WC_RECV (%d)\n",
+					wc.opcode, IBV_WC_RECV);
+			return false;
+		}
+		result = ctx->recv_msg->lock_rkey == 0;
+
+		ret = rdma_post_recv(ctx->id, NULL, ctx->recv_msg, sizeof(*ctx->recv_msg), ctx->recv_mr);
+		if (ret) {
+			perror("rdma_post_recv");
+			return false;
+		}
+	} while (!result);
+
+	return true;
 }
 
-static bool do_unlock_rpcpoll(struct rdma_cm_id *id, uint64_t lock_id, uint32_t lock_key)
+static bool do_unlock_rpcpoll(struct context *ctx, uint64_t lock_id, uint32_t lock_key)
 {
-	fprintf(stderr, "rpcpoll not implemented\n");
-	return false;
+	struct ibv_wc wc;
+	struct ibv_sge sge;
+	int ret;
+
+	ctx->send_msg->opcode = htonl(op_unlock);
+	ctx->send_msg->lock_rkey = ctx->lock_key;
+	ctx->send_msg->lock_addr = ctx->lock_id;
+
+	ret = rdma_post_send(ctx->id, NULL, ctx->send_msg,
+			sizeof(*ctx->send_msg), ctx->send_mr,
+			ctx->send_flags);
+	if (ret < 0) {
+		fprintf(stderr, "urdma_remote_lock: %s\n", strerror(-ret));
+		return false;
+	}
+
+	while ((ret = rdma_get_send_comp(ctx->id, &wc)) == 0);
+	if (ret < 0) {
+		perror("rdma_get_send_comp");
+		return false;
+	}
+	if (wc.status != IBV_WC_SUCCESS) {
+		fprintf(stderr, "Client 1 Got unexpected wc status %x not 0\n",
+				wc.status);
+		return false;
+	}
+	if (wc.opcode != IBV_WC_SEND) {
+		fprintf(stderr, "Client 1 Got unexpected wc opcode %d not IBV_WC_SEND (%d)\n",
+				wc.opcode, IBV_WC_SEND);
+		return false;
+	}
+	while ((ret = rdma_get_recv_comp(ctx->id, &wc)) == 0);
+	if (ret < 0) {
+		perror("rdma_get_recv_comp");
+		return false;
+	}
+	if (wc.status != IBV_WC_SUCCESS) {
+		fprintf(stderr, "Client 1 Got unexpected wc status %x not 0\n",
+				wc.status);
+		return false;
+	}
+	if (wc.opcode != IBV_WC_RECV) {
+		fprintf(stderr, "Client 1 Got unexpected wc opcode %d not IBV_WC_RECV (%d)\n",
+				wc.opcode, IBV_WC_RECV);
+		return false;
+	}
+
+	ret = rdma_post_recv(ctx->id, NULL, ctx->recv_msg, sizeof(*ctx->recv_msg), ctx->recv_mr);
+	if (ret) {
+		perror("rdma_post_recv");
+		return false;
+	}
+
+	return true;
 }
 
-static bool do_lock_rpcqueue(struct rdma_cm_id *id, uint64_t lock_id, uint32_t lock_key)
+static bool do_lock_rpcqueue(struct context *ctx, uint64_t lock_id, uint32_t lock_key)
 {
 	fprintf(stderr, "rpcqueue not implemented\n");
 	return false;
 }
 
-static bool do_unlock_rpcqueue(struct rdma_cm_id *id, uint64_t lock_id, uint32_t lock_key)
+static bool do_unlock_rpcqueue(struct context *ctx, uint64_t lock_id, uint32_t lock_key)
 {
 	fprintf(stderr, "rpcqueue not implemented\n");
 	return false;
 }
 
-static bool do_lock_atomic(struct rdma_cm_id *id, uint64_t lock_id, uint32_t lock_key)
+static bool do_lock_atomic(struct context *ctx, uint64_t lock_id, uint32_t lock_key)
 {
 	struct ibv_send_wr wr, *bad_wr;
 	struct ibv_wc wc;
@@ -160,7 +288,7 @@ static bool do_lock_atomic(struct rdma_cm_id *id, uint64_t lock_id, uint32_t loc
 	int ret;
 
 	do {
-		wr.wr_id = (uintptr_t)id;
+		wr.wr_id = (uintptr_t)ctx->id;
 		wr.next = NULL;
 		wr.sg_list = &sge;
 		wr.sg_list[0].addr = (uintptr_t)(&target);
@@ -174,13 +302,13 @@ static bool do_lock_atomic(struct rdma_cm_id *id, uint64_t lock_id, uint32_t loc
 		wr.wr.atomic.compare_add = 0;
 		wr.wr.atomic.swap = htonll(1);
 
-		ret = ibv_post_send(id->qp, &wr, &bad_wr);
+		ret = ibv_post_send(ctx->id->qp, &wr, &bad_wr);
 		if (ret < 0) {
 			fprintf(stderr, "urdma_remote_lock: %s\n", strerror(-ret));
 			return false;
 		}
 
-		while ((ret = rdma_get_send_comp(id, &wc)) == 0);
+		while ((ret = rdma_get_send_comp(ctx->id, &wc)) == 0);
 		if (ret < 0) {
 			perror("rdma_get_send_comp");
 			return false;
@@ -200,7 +328,7 @@ static bool do_lock_atomic(struct rdma_cm_id *id, uint64_t lock_id, uint32_t loc
 	return true;
 }
 
-static bool do_unlock_atomic(struct rdma_cm_id *id, uint64_t lock_id, uint32_t lock_key)
+static bool do_unlock_atomic(struct context *ctx, uint64_t lock_id, uint32_t lock_key)
 {
 	struct ibv_send_wr wr, *bad_wr;
 	struct ibv_sge sge;
@@ -208,7 +336,7 @@ static bool do_unlock_atomic(struct rdma_cm_id *id, uint64_t lock_id, uint32_t l
 	uint64_t target;
 	int ret;
 
-	wr.wr_id = (uint64_t)id;
+	wr.wr_id = (uint64_t)ctx->id;
 	wr.next = NULL;
 	wr.sg_list = &sge;
 	wr.sg_list[0].addr = (uint64_t)(&target);
@@ -222,13 +350,13 @@ static bool do_unlock_atomic(struct rdma_cm_id *id, uint64_t lock_id, uint32_t l
 	wr.wr.atomic.compare_add = htonll(1);
 	wr.wr.atomic.swap = htonll(0);
 
-	ret = ibv_post_send(id->qp, &wr, &bad_wr);
+	ret = ibv_post_send(ctx->id->qp, &wr, &bad_wr);
 	if (ret < 0) {
 		fprintf(stderr, "urdma_remote_lock: %s\n", strerror(-ret));
 		return false;
 	}
 
-	while ((ret = rdma_get_send_comp(id, &wc)) == 0);
+	while ((ret = rdma_get_send_comp(ctx->id, &wc)) == 0);
 	if (ret < 0) {
 		perror("rdma_get_send_comp");
 		return false;
@@ -247,19 +375,19 @@ static bool do_unlock_atomic(struct rdma_cm_id *id, uint64_t lock_id, uint32_t l
 	return true;
 }
 
-static bool do_lock_volt(struct rdma_cm_id *id, uint64_t lock_id, uint32_t lock_key)
+static bool do_lock_volt(struct context *ctx, uint64_t lock_id, uint32_t lock_key)
 {
 	struct ibv_wc wc;
 	uint32_t lock_status;
 	int ret;
 
-	ret = urdma_remote_lock(id->qp, &lock_status, lock_id, lock_key, NULL);
+	ret = urdma_remote_lock(ctx->id->qp, &lock_status, lock_id, lock_key, NULL);
 	if (ret < 0) {
 		fprintf(stderr, "urdma_remote_lock: %s\n", strerror(-ret));
 		return false;
 	}
 
-	while ((ret = rdma_get_send_comp(id, &wc)) == 0);
+	while ((ret = rdma_get_send_comp(ctx->id, &wc)) == 0);
 	if (ret < 0) {
 		perror("rdma_get_send_comp");
 		return false;
@@ -278,20 +406,20 @@ static bool do_lock_volt(struct rdma_cm_id *id, uint64_t lock_id, uint32_t lock_
 	return true;
 }
 
-static bool do_unlock_volt(struct rdma_cm_id *id, uint64_t lock_id, uint32_t lock_key)
+static bool do_unlock_volt(struct context *ctx, uint64_t lock_id, uint32_t lock_key)
 {
 	struct ibv_wc wc;
 	uint32_t lock_status;
 	int ret;
 
-	ret = urdma_remote_unlock(id->qp, &lock_status, lock_id, lock_key,
+	ret = urdma_remote_unlock(ctx->id->qp, &lock_status, lock_id, lock_key,
 				  NULL);
 	if (ret < 0) {
 		fprintf(stderr, "urdma_remote_unlock: %s\n", strerror(-ret));
 		return false;
 	}
 
-	while ((ret = rdma_get_send_comp(id, &wc)) == 0);
+	while ((ret = rdma_get_send_comp(ctx->id, &wc)) == 0);
 	if (ret < 0) {
 		perror("rdma_get_send_comp");
 		return false;
@@ -312,22 +440,21 @@ static bool do_unlock_volt(struct rdma_cm_id *id, uint64_t lock_id, uint32_t loc
 
 static void *client_thread(void *arg)
 {
-	const struct context *ctx = arg;
+	struct context *ctx = arg;
 	struct timespec start_time, end_time;
 	struct ibv_qp_init_attr attr;
 	struct rdma_cm_id *id;
-	struct ibv_mr *mr, *send_mr;
-	struct lock_announce_message lock_msg;
 	struct ibv_wc wc;
 	unsigned long i;
-	int send_flags, ret;
+	int ret;
 
 	memcpy(&attr, &qp_init_attr_template, sizeof attr);
-	attr.qp_context = id;
+	attr.qp_context = ctx;
 	ret = rdma_create_ep(&id, ctx->addr_info, NULL, &attr);
+	ctx->id = id;
 	// Check to see if we got inline data allowed or not
 	if (attr.cap.max_inline_data >= 16)
-		send_flags = IBV_SEND_INLINE;
+		ctx->send_flags = IBV_SEND_INLINE;
 	else
 		printf("rdma_client: device doesn't support IBV_SEND_INLINE, "
 		       "using sge sends\n");
@@ -337,14 +464,32 @@ static void *client_thread(void *arg)
 		goto out;
 	}
 
-	mr = rdma_reg_msgs(id, &lock_msg, sizeof(lock_msg));
-	if (!mr) {
-		perror("rdma_reg_msgs for lock_msg");
+	ctx->recv_msg = aligned_alloc(sizeof(*ctx->recv_msg), CACHE_LINE_SIZE);
+	if (!ctx->recv_msg) {
+		perror("aligned_alloc for recv_msg");
+		goto out_dereg_recv;
+	}
+	ctx->recv_mr = rdma_reg_msgs(id, ctx->recv_msg, sizeof(*ctx->recv_msg));
+	if (!ctx->recv_mr) {
+		perror("rdma_reg_msgs for ctx->recv_msg");
 		ret = -1;
 		goto out_destroy_ep;
 	}
+	ctx->send_msg = aligned_alloc(sizeof(*ctx->send_msg), CACHE_LINE_SIZE);
+	if (!ctx->send_msg) {
+		perror("aligned_alloc for send_msg");
+		goto out_dereg_recv;
+	}
+	if ((ctx->send_flags & IBV_SEND_INLINE) == 0) {
+		ctx->send_mr = rdma_reg_msgs(id, ctx->send_msg, 16);
+		if (!ctx->send_mr) {
+			ret = -1;
+			perror("rdma_reg_msgs for ctx->recv_msg");
+			goto out_free_send;
+		}
+	}
 
-	ret = rdma_post_recv(id, NULL, &lock_msg, sizeof(lock_msg), mr);
+	ret = rdma_post_recv(id, NULL, ctx->recv_msg, sizeof(*ctx->recv_msg), ctx->recv_mr);
 	if (ret) {
 		perror("rdma_post_recv");
 		goto out_dereg_send;
@@ -361,15 +506,23 @@ static void *client_thread(void *arg)
 		perror("rdma_get_recv_comp");
 		goto out_disconnect;
 	}
+	ctx->lock_id = ctx->recv_msg->lock_addr;
+	ctx->lock_key = ctx->recv_msg->lock_rkey;
+
+	ret = rdma_post_recv(id, NULL, ctx->recv_msg, sizeof(*ctx->recv_msg), ctx->recv_mr);
+	if (ret) {
+		perror("rdma_post_recv");
+		goto out_dereg_send;
+	}
 
 	pthread_barrier_wait(&start_barrier);
 	clock_gettime(CLOCK_MONOTONIC, &start_time);
 	for (i = 0; i < ctx->cycle_count; i++) {
-		if (!ctx->mode->lock(id, lock_msg.lock_addr, lock_msg.lock_rkey)) {
+		if (!ctx->mode->lock(ctx, ctx->recv_msg->lock_addr, ctx->recv_msg->lock_rkey)) {
 			break;
 		}
 
-		if (!ctx->mode->unlock(id, lock_msg.lock_addr, lock_msg.lock_rkey)) {
+		if (!ctx->mode->unlock(ctx, ctx->recv_msg->lock_addr, ctx->recv_msg->lock_rkey)) {
 			break;
 		}
 	}
@@ -383,10 +536,12 @@ static void *client_thread(void *arg)
 out_disconnect:
 	rdma_disconnect(id);
 out_dereg_send:
-	if ((send_flags & IBV_SEND_INLINE) == 0)
-		rdma_dereg_mr(send_mr);
+	if ((ctx->send_flags & IBV_SEND_INLINE) == 0)
+		rdma_dereg_mr(ctx->send_mr);
+out_free_send:
+	free(ctx->send_msg);
 out_dereg_recv:
-	rdma_dereg_mr(mr);
+	rdma_dereg_mr(ctx->recv_mr);
 out_destroy_ep:
 	rdma_destroy_ep(id);
 out:
@@ -397,12 +552,13 @@ static int run(const struct mode *mode, unsigned long cycle_count,
 		unsigned int thread_count)
 {
 	struct rdma_addrinfo hints;
-	struct context ctx;
+	struct context ctx, *perth_ctx;
 	char errbuf[128];
 	pthread_t threads[thread_count];
 	unsigned int i;
 	int ret;
 
+	memset(&ctx, 0, sizeof(ctx));
 	ctx.cycle_count = cycle_count;
 	ctx.mode = mode;
 
@@ -422,7 +578,13 @@ static int run(const struct mode *mode, unsigned long cycle_count,
 	}
 
 	for (i = 0; i < thread_count; ++i) {
-		ret = pthread_create(&threads[i], NULL, &client_thread, &ctx);
+		perth_ctx = malloc(sizeof(*perth_ctx));
+		if (!perth_ctx) {
+			perror("malloc perth_ctx");
+			goto destroy_barrier;
+		}
+		memcpy(perth_ctx, &ctx, sizeof(*perth_ctx));
+		ret = pthread_create(&threads[i], NULL, &client_thread, perth_ctx);
 		if (ret) {
 			fprintf(stderr, "error creating thread %i: %s\n", i,
 					strerror_p(ret, errbuf, sizeof(errbuf)));

@@ -42,28 +42,51 @@
 #include <rdma/rdma_verbs.h>
 #include "verbs.h"
 
+#define CACHE_LINE_SIZE 64
+
 static const char *server = "127.0.0.1";
 static const char *port = "7471";
 
 static uint8_t lock_storage[8];
-static uint8_t recv_msg[16];
 
-struct lock_announce_message {
-	uint64_t lock_addr;
+enum opcode {
+	op_announce,
+	op_lock_poll,
+	op_lock_queue,
+	op_unlock,
+	op_lock_response,
+};
+
+struct lock_message {
+	uint32_t opcode;
 	uint32_t lock_rkey;
+	uint64_t lock_addr;
+};
+
+struct context {
+	struct lock_message *send_msg;
+	struct ibv_mr *send_mr;
+	struct lock_message *recv_msg;
+	struct ibv_mr *recv_mr;
+	struct ibv_mr *lock_mr;
+	char peerhost[40];
+	char peerport[6];
 };
 
 static void *agent_thread(void *arg)
 {
 	struct sockaddr *sa;
+	struct context *ctx;
 	struct rdma_cm_id *id = arg;
-	struct lock_announce_message lock_msg;
 	struct ibv_qp_init_attr init_attr;
 	struct ibv_qp_attr qp_attr;
-	struct ibv_mr *lock_mr, *send_mr, *recv_mr;
 	struct ibv_wc wc;
-	char peerhost[40], peerport[6];
-	int socklen, send_flags, ret;
+	int socklen, send_flags, ret, ret2;
+
+	ctx = calloc(1, sizeof(*ctx));
+	if (!ctx) {
+		goto out_destroy_accept_ep;
+	}
 
 	sa = rdma_get_peer_addr(id);
 	switch (sa->sa_family) {
@@ -80,10 +103,10 @@ static void *agent_thread(void *arg)
 		socklen = sizeof(struct sockaddr);
 		break;
 	}
-	getnameinfo(sa, socklen, peerhost, sizeof(peerhost),
-			peerport, sizeof(peerport),
+	getnameinfo(sa, socklen, ctx->peerhost, sizeof(ctx->peerhost),
+			ctx->peerport, sizeof(ctx->peerport),
 			NI_NUMERICHOST|NI_NUMERICSERV);
-	printf("Got connect request from client: %s:%s\n", peerhost, peerport);
+	printf("Got connect request from client: %s:%s\n", ctx->peerhost, ctx->peerport);
 
 	memset(&qp_attr, 0, sizeof qp_attr);
 	memset(&init_attr, 0, sizeof init_attr);
@@ -91,7 +114,7 @@ static void *agent_thread(void *arg)
 			   &init_attr);
 	if (ret) {
 		perror("ibv_query_qp");
-		goto out_destroy_accept_ep;
+		goto out_free_ctx;
 	}
 	if (init_attr.cap.max_inline_data >= 16)
 		send_flags = IBV_SEND_INLINE;
@@ -99,30 +122,40 @@ static void *agent_thread(void *arg)
 		printf("rdma_server: device doesn't support IBV_SEND_INLINE, "
 		       "using sge sends\n");
 
-	lock_msg.lock_addr = (uintptr_t)&lock_storage;
-	lock_mr = rdma_reg_write(id, &lock_storage, sizeof(lock_storage));
-	if (!lock_mr) {
+	ctx->send_msg = aligned_alloc(sizeof(*ctx->send_msg), CACHE_LINE_SIZE);
+	if (!ctx->send_msg) {
+		perror("aligned_alloc for send_msg");
+		goto out_dereg_recv;
+	}
+	ctx->send_msg->lock_addr = (uintptr_t)&lock_storage;
+	ctx->lock_mr = rdma_reg_write(id, &lock_storage, sizeof(lock_storage));
+	if (!ctx->lock_mr) {
 		perror("rdma_reg_write");
 		goto out_destroy_accept_ep;
 	}
-	lock_msg.lock_rkey = lock_mr->rkey;
+	ctx->send_msg->lock_rkey = ctx->lock_mr->rkey;
 
-	recv_mr = rdma_reg_msgs(id, recv_msg, 16);
-	if (!recv_mr) {
+	ctx->recv_msg = aligned_alloc(sizeof(*ctx->recv_msg), CACHE_LINE_SIZE);
+	if (!ctx->recv_msg) {
+		perror("aligned_alloc for recv_msg");
+		goto out_dereg_recv;
+	}
+	ctx->recv_mr = rdma_reg_msgs(id, ctx->recv_msg, 16);
+	if (!ctx->recv_mr) {
 		ret = -1;
 		perror("rdma_reg_msgs for recv_msg");
 		goto out_dereg_lock;
 	}
 	if ((send_flags & IBV_SEND_INLINE) == 0) {
-		send_mr = rdma_reg_msgs(id, &lock_msg, 16);
-		if (!send_mr) {
+		ctx->send_mr = rdma_reg_msgs(id, ctx->send_msg, 16);
+		if (!ctx->send_mr) {
 			ret = -1;
-			perror("rdma_reg_msgs for lock_msg");
+			perror("rdma_reg_msgs for send_msg");
 			goto out_dereg_recv;
 		}
 	}
 
-	ret = rdma_post_recv(id, NULL, recv_msg, 16, recv_mr);
+	ret = rdma_post_recv(id, NULL, ctx->recv_msg, 16, ctx->recv_mr);
 	if (ret) {
 		perror("rdma_post_recv");
 		goto out_dereg_send;
@@ -134,7 +167,8 @@ static void *agent_thread(void *arg)
 		goto out_dereg_send;
 	}
 
-	ret = rdma_post_send(id, NULL, &lock_msg, sizeof(lock_msg), send_mr, send_flags);
+	ret = rdma_post_send(id, NULL, ctx->send_msg, sizeof(*ctx->send_msg),
+			ctx->send_mr, send_flags);
 
 	while ((ret = rdma_get_send_comp(id, &wc)) == 0);
 	if (ret < 0) {
@@ -144,33 +178,99 @@ static void *agent_thread(void *arg)
 
 	do {
 		while ((ret = rdma_get_recv_comp(id, &wc)) == 0);
+		if (ret < 0) {
+			perror("rdma_get_recv_comp");
+			goto out_disconnect;
+		}
 		if (wc.status != IBV_WC_SUCCESS) {
 			if (wc.status != IBV_WC_WR_FLUSH_ERR) {
 				fprintf(stderr, "got unexpected WC result from client %s:%s: %s\n",
-						peerhost, peerport,
+						ctx->peerhost, ctx->peerport,
 						ibv_wc_status_str(wc.status));
+			} else {
+				fprintf(stderr, "flush error on client %s:%s\n",
+						ctx->peerhost, ctx->peerport);
 			}
 			break;
 		}
+		if (wc.opcode == IBV_WC_RECV) {
+			uint64_t *lock_ptr = (void *)&lock_storage;
+			switch (ntohl(ctx->recv_msg->opcode)) {
+			case op_lock_poll:
+				ctx->send_msg->opcode = htonl(op_lock_response);
+				if (*lock_ptr == 0) {
+					*lock_ptr = 1;
+					ctx->send_msg->lock_rkey = htonl(0);
+				} else {
+					ctx->send_msg->lock_rkey = htonl(1);
+				}
+
+				ret = rdma_post_recv(id, NULL, ctx->recv_msg, 16, ctx->recv_mr);
+				if (ret) {
+					perror("rdma_post_recv");
+					goto out_disconnect;
+				}
+
+				ret = rdma_post_send(id, NULL, ctx->send_msg,
+						sizeof(*ctx->send_msg), ctx->send_mr,
+						send_flags);
+				if (ret) {
+					perror("rdma_post_send");
+					goto out_disconnect;
+				}
+				ret = rdma_get_send_comp(id, &wc);
+				if (ret < 0) {
+					perror("rdma_get_send_comp");
+					goto out_disconnect;
+				}
+				break;
+			case op_unlock:
+				ctx->send_msg->opcode = htonl(op_lock_response);
+				if (*lock_ptr == 1) {
+					*lock_ptr = 0;
+					ctx->send_msg->lock_rkey = htonl(0);
+				} else {
+					ctx->send_msg->lock_rkey = htonl(1);
+				}
+
+				ret = rdma_post_recv(id, NULL, ctx->recv_msg, 16, ctx->recv_mr);
+				if (ret) {
+					perror("rdma_post_recv");
+					goto out_disconnect;
+				}
+
+				ret = rdma_post_send(id, NULL, ctx->send_msg,
+						sizeof(*ctx->send_msg), ctx->send_mr,
+						send_flags);
+				if (ret) {
+					perror("rdma_post_send");
+					goto out_disconnect;
+				}
+
+				ret = rdma_get_send_comp(id, &wc);
+				if (ret < 0) {
+					perror("rdma_get_send_comp");
+					goto out_disconnect;
+				}
+				break;
+			}
+		}
 	} while (ret >= 0);
-	if (ret < 0) {
-		perror("rdma_get_recv_comp");
-		goto out_disconnect;
-	}
 
 out_disconnect:
 	rdma_disconnect(id);
-	printf("Got disconnect from client: %s:%s\n", peerhost, peerport);
+	printf("Got disconnect from client: %s:%s\n", ctx->peerhost, ctx->peerport);
 out_dereg_send:
 	if ((send_flags & IBV_SEND_INLINE) == 0)
-		rdma_dereg_mr(send_mr);
+		rdma_dereg_mr(ctx->send_mr);
 out_dereg_recv:
-	rdma_dereg_mr(recv_mr);
+	rdma_dereg_mr(ctx->recv_mr);
 out_dereg_lock:
-	rdma_dereg_mr(lock_mr);
+	rdma_dereg_mr(ctx->lock_mr);
+out_free_ctx:
+	free(ctx);
 out_destroy_accept_ep:
 	rdma_destroy_ep(id);
-
 	return NULL;
 }
 
