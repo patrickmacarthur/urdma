@@ -132,6 +132,10 @@ enum urdma_event_type {
 	SIW_EVENT_QP_DISCONNECTED = 3,
 		/**< Sent from the kernel to userspace to indicate that a
 		 * connection has been torn down. */
+	SIW_EVENT_QP_SETUP_ERR	 = 4,
+		/**< Sent from userspace to the kernel in response to a
+		 * QP_CONNECTED event to indicate that connection setup
+		 * failed. */
 };
 
 #endif

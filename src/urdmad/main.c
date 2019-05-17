@@ -438,10 +438,8 @@ handle_qp_connected_event(struct urdma_qp_connected_event *event, size_t count)
 	dev = &driver->ports[event->urdmad_dev_id];
 	qp = &dev->qp[event->urdmad_qp_id];
 	ret = do_setup_qp(event, dev, qp);
-	if (ret) {
-		return;
-	}
-	rtr_event.event_type = SIW_EVENT_QP_RTR;
+
+	rtr_event.event_type = ret ? SIW_EVENT_QP_SETUP_ERR : SIW_EVENT_QP_RTR;
 	rtr_event.kmod_qp_id = event->kmod_qp_id;
 	ret = write(driver->chardev.fd, &rtr_event, sizeof(rtr_event));
 	if (WARN_ONCE(ret < 0, "Error writing event file: %s\n",

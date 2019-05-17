@@ -316,6 +316,30 @@ static ssize_t urdma_chardev_write(struct file *filp, const char __user *buf,
 		} else {
 			return -EINVAL;
 		}
+	case SIW_EVENT_QP_SETUP_ERR:
+		if (count != sizeof(*qp_rtr_event)) {
+			rv = -EINVAL;
+			goto out;
+		}
+		qp_rtr_event = (struct urdma_qp_rtr_event *)&event;
+		qp = NULL;
+		list_for_each(lptr, &file->rtr_wait_list) {
+			cep = list_entry(lptr, struct siw_cep, rtr_wait_entry);
+			if (cep->qp->hdr.id == qp_rtr_event->kmod_qp_id) {
+				qp = cep->qp;
+				siw_qp_get(qp);
+				list_del(&qp->cep->rtr_wait_entry);
+				break;
+			}
+		}
+		spin_unlock_bh(&file->lock);
+		if (qp) {
+			rv = siw_qp_rtr_fail(qp->cep);
+			siw_qp_put(qp);
+			return (rv < 0) ? rv : count;
+		} else {
+			return -EINVAL;
+		}
 	default:
 		pr_debug(" got invalid event type %u\n", event.event_type);
 		rv = -EINVAL;
