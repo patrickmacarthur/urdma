@@ -219,7 +219,7 @@ return_qp(struct usiw_port *dev, struct urdmad_qp *qp)
 		fdirf.input.flow.udp4_flow.ip.dst_ip = dev->ipv4_addr;
 		fdirf.action.behavior = RTE_ETH_FDIR_ACCEPT;
 		fdirf.action.report_status = RTE_ETH_FDIR_NO_REPORT_STATUS;
-		fdirf.soft_id = qp->rx_queue;
+		fdirf.soft_id = qp->qp_id;
 		fdirf.action.rx_queue = qp->rx_queue;
 		fdirf.input.flow.udp4_flow.dst_port = qp->local_udp_port;
 		ret = rte_eth_dev_filter_ctrl(dev->portid,
@@ -378,10 +378,11 @@ do_setup_qp(struct urdma_qp_connected_event *event, struct usiw_port *dev,
 		fdirf.input.flow.udp4_flow.ip.dst_ip = dev->ipv4_addr;
 		fdirf.action.behavior = RTE_ETH_FDIR_ACCEPT;
 		fdirf.action.report_status = RTE_ETH_FDIR_NO_REPORT_STATUS;
-		fdirf.soft_id = event->rxq;
+		fdirf.soft_id = event->urdmad_qp_id;
 		fdirf.action.rx_queue = event->rxq;
 		fdirf.input.flow.udp4_flow.dst_port = event->src_port;
-		RTE_LOG(DEBUG, USER1, "fdir: assign rx queue %d: IP address %" PRIx32 ", UDP port %" PRIu16 "\n",
+		RTE_LOG(DEBUG, USER1, "fdir: assign soft_id %d rx queue %d: IP address %" PRIx32 ", UDP port %" PRIu16 "\n",
+					fdirf.soft_id,
 					fdirf.action.rx_queue,
 					rte_be_to_cpu_32(dev->ipv4_addr),
 					rte_be_to_cpu_16(event->src_port));
