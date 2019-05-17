@@ -171,7 +171,9 @@ return_qp(struct usiw_port *dev, struct urdmad_qp *qp)
 	list_del(&qp->urdmad__entry);
 	list_add_tail(&dev->avail_qp, &qp->urdmad__entry);
 
-	if (dev->flags & port_5tuple) {
+	if (dev->flags & port_rteflow) {
+		ret = rte_flow_destroy(dev->portid, qp->flow_rule, NULL);
+	} else if (dev->flags & port_5tuple) {
 		struct rte_eth_ntuple_filter ntuple;
 		memset(&ntuple, 0, sizeof(ntuple));
 		ntuple.flags = RTE_5TUPLE_FLAGS;
@@ -332,6 +334,50 @@ do_setup_qp(struct urdma_qp_connected_event *event, struct usiw_port *dev,
 		qp->tx_burst_size = dev->tx_desc_count;
 	}
 	memcpy(&qp->remote_ether_addr, event->dst_ether, ETHER_ADDR_LEN);
+	if (dev->flags & (port_rteflow|port_rteflow_unknown)) {
+		struct urdma_flow_rule rule;
+		memset(&rule, 0, sizeof(rule));
+		rule.attr.priority = 1;
+		rule.attr.ingress = 1;
+		rule.attr.egress = 0;
+		rule.items[0].type = RTE_FLOW_ITEM_TYPE_ANY;
+		rule.items[0].spec = &rule.eth_item;
+		rule.eth_item.num = 1;
+		rule.items[1].type = RTE_FLOW_ITEM_TYPE_IPV4;
+		rule.items[1].spec = &rule.ipv4_item;
+		rule.items[1].mask = &rule.ipv4_mask;
+		rule.ipv4_item.hdr.dst_addr = dev->ipv4_addr;
+		rule.ipv4_mask.hdr.dst_addr = UINT32_MAX;
+		rule.items[2].type = RTE_FLOW_ITEM_TYPE_UDP;
+		rule.items[2].spec = &rule.udp_item;
+		rule.items[2].mask = &rule.udp_mask;
+		rule.udp_item.hdr.dst_port = qp->local_udp_port;
+		rule.udp_mask.hdr.dst_port = UINT16_MAX;
+		rule.items[3].type = RTE_FLOW_ITEM_TYPE_END;
+		rule.actions[0].type = RTE_FLOW_ACTION_TYPE_QUEUE;
+		rule.actions[0].conf = &rule.queue_action;
+		rule.queue_action.index = qp->rx_queue;
+		rule.actions[1].type = RTE_FLOW_ACTION_TYPE_END;
+		RTE_LOG(DEBUG, USER1, "rte_flow: assign rx queue %d: IP address %" PRIx32 ", UDP port %" PRIu16 "\n",
+					qp->rx_queue,
+					rte_be_to_cpu_32(dev->ipv4_addr),
+					rte_be_to_cpu_16(event->src_port));
+		qp->flow_rule = rte_flow_create(dev->portid, &rule.attr, rule.items, rule.actions, NULL);
+		if (qp->flow_rule) {
+			goto start;
+		} else {
+			if (dev->flags & port_rteflow_unknown) {
+				/* We tried and couldn't create an rte_flow rule
+				 * so we should give up and use one of the other
+				 * methods instead. */
+				dev->flags &= ~port_rteflow_unknown;
+			} else {
+				RTE_LOG(CRIT, USER1, "Could not add rte_flow UDP filter: %s\n",
+						rte_strerror(rte_errno));
+				goto unlock;
+			}
+		}
+	}
 	if (dev->flags & port_5tuple) {
 		struct rte_eth_ntuple_filter ntuple;
 		memset(&ntuple, 0, sizeof(ntuple));
@@ -395,6 +441,7 @@ do_setup_qp(struct urdma_qp_connected_event *event, struct usiw_port *dev,
 		}
 	}
 
+start:
 	/* Start the queues now that we have bound to an interface */
 	ret = rte_eth_dev_rx_queue_start(event->urdmad_dev_id, event->rxq);
 	if (ret < 0 && ret != -ENOTSUP) {
@@ -864,6 +911,7 @@ usiw_port_init(struct usiw_port *iface, struct usiw_port_config *port_config)
 			== rx_checksum_offloads) {
 		port_conf.rxmode.hw_ip_checksum = 1;
 	}
+	iface->flags |= port_rteflow;
 	if (rte_eth_dev_filter_supported(iface->portid,
 						RTE_ETH_FILTER_NTUPLE) == 0) {
 		/* ntuple can be 5tuple or 2tuple; we assume 5tuple and then

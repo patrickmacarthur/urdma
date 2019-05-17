@@ -45,6 +45,7 @@
 
 #include <rte_ethdev.h>
 #include <rte_ether.h>
+#include <rte_flow.h>
 #include <rte_kni.h>
 #include <rte_spinlock.h>
 
@@ -60,6 +61,20 @@ enum usiw_port_flags {
 	port_fdir = 2,
 	port_2tuple = 4,
 	port_5tuple = 8,
+	port_rteflow = 16,
+	port_rteflow_unknown = 32,
+};
+
+struct urdma_flow_rule {
+	struct rte_flow_attr attr;
+	struct rte_flow_item_any eth_item;
+	struct rte_flow_item_ipv4 ipv4_item;
+	struct rte_flow_item_ipv4 ipv4_mask;
+	struct rte_flow_item_udp udp_item;
+	struct rte_flow_item_udp udp_mask;
+	struct rte_flow_item items[4];
+	struct rte_flow_action_queue queue_action;
+	struct rte_flow_action actions[2];
 };
 
 struct usiw_port {

@@ -52,6 +52,8 @@
 
 #define URDMA_SOCK_PROTO_VERSION 1
 
+struct rte_flow;
+
 /** Internal state machine of the queue pair. */
 enum urdma_qp_state {
 	usiw_qp_unbound = 0,
@@ -110,6 +112,8 @@ struct urdmad_qp {
 	uint16_t mtu;
 		/**< Device MTU. */
 
+	struct rte_flow *flow_rule;
+		/**< Private field used only by urdmad to store flow rule. */
 	struct list_node urdmad__entry;
 		/**< Private field used only by urdmad to thread onto list. */
 };
